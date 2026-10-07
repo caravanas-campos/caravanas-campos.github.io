@@ -1551,11 +1551,17 @@ async function pintarSalida(zona){
   // subir excel
   const filaX=el('div',{className:'fila',style:'align-items:end'});
   const file=el('input',{type:'file',accept:'.xlsx,.xls,.csv'});
-  const ta=el('textarea',{rows:3,placeholder:'…o pegá los números que salen'});
+  const ta=el('textarea',{rows:3,placeholder:'…o pegá los números que salen (uno por línea, o separados por coma/espacio)'});
   const bSub=el('button',{},'Cargar las que salen');
+  const bPeg=el('button',{},'Cargar las pegadas');
   filaX.append(el('div',{style:'flex:2'},el('label',{},'Excel de la jaula'),file),
                el('div',{style:'flex:0 0 auto'},bSub));
-  t.append(filaX,el('div',{style:'margin-top:.5rem'},el('label',{},'o pegar'),ta));
+  const filaP=el('div',{className:'fila',style:'align-items:end;margin-top:.5rem'});
+  filaP.append(el('div',{style:'flex:2'},el('label',{},'o pegar'),ta),
+               el('div',{style:'flex:0 0 auto'},bPeg));
+  t.append(filaX,filaP);
+  // resultado de la carga, acá mismo (antes quedaba abajo de todo y parecía que no pasaba nada)
+  const resCarga=el('div',{style:'margin-top:.5rem'}); t.append(resCarga);
 
   const bConf=el('button',{style:'margin-top:.8rem'},'Confirmar baja');
   t.append(el('div',{},bConf));
@@ -1584,22 +1590,34 @@ async function pintarSalida(zona){
   estadoSalida(res);   // muestra la grilla de lo que ya tiene la salida
 
   async function subir(nums){
+    resCarga.innerHTML='';
     try{
       const r=await rpc('sumar_a_salida',{p_salida_id:SALIDA.id,p_numeros:nums});
-      res.innerHTML='';
-      const box=el('div',{className:'tarjeta'});
-      box.append(el('div',{},`Tomadas ${r.tomadas}`+(r.ya_en_esta?` · ya estaban ${r.ya_en_esta}`:'')));
-      if(r.no_activas&&r.no_activas.length)box.append(el('div',{className:'aviso'},'No activas: '+r.no_activas.map(x=>x.caravana+' ('+x.estado+')').slice(0,20).join(', ')));
-      if(r.no_existen&&r.no_existen.length)box.append(el('div',{className:'aviso'},'No existen: '+r.no_existen.slice(0,20).join(', ')));
-      res.append(box); await estadoSalida(res);
-    }catch(e){res.innerHTML='';res.append(el('div',{className:'aviso'},'Error: '+errMsg(e)));}
+      const box=el('div',{className:'tarjeta',style:'margin:0;background:#f6f3ea'});
+      box.append(el('div',{},el('b',{},`Tomadas ${r.tomadas} de ${nums.length}`),(r.ya_en_esta?` · ya estaban en esta salida ${r.ya_en_esta}`:'')));
+      if(r.no_activas&&r.no_activas.length)box.append(el('div',{className:'aviso'},'No activas ('+r.no_activas.length+'): '+r.no_activas.map(x=>x.caravana+' ('+x.estado+')').slice(0,20).join(', ')+(r.no_activas.length>20?' …':'')));
+      if(r.no_existen&&r.no_existen.length)box.append(el('div',{className:'aviso'},'No existen ('+r.no_existen.length+'): '+r.no_existen.slice(0,20).join(', ')+(r.no_existen.length>20?' …':'')));
+      resCarga.append(box);
+      // lo que se tomó ya está en el pre-despacho: limpio los campos para no cargarlo dos veces
+      ta.value=''; file.value='';
+      res.innerHTML=''; await estadoSalida(res);
+      return r;
+    }catch(e){resCarga.append(el('div',{className:'aviso'},'Error: '+errMsg(e))); return null;}
   }
-  bSub.onclick=async()=>{
+  // números pendientes de cargar (pegados + Excel)
+  async function pendientes(){
     let nums=desglosar(ta.value);
     if(file.files[0]) nums=nums.concat(await numerosDeArchivo(file.files[0]));
-    if(!nums.length){res.innerHTML='';res.append(el('div',{className:'aviso'},'Subí un archivo o pegá los números.'));return;}
-    subir(nums);
-  };
+    return [...new Set(nums.map(n=>String(n).trim()).filter(Boolean))];
+  }
+  async function cargarPendientes(aviso){
+    const nums=await pendientes();
+    if(!nums.length){ if(aviso){resCarga.innerHTML='';resCarga.append(el('div',{className:'aviso'},'Subí un archivo o pegá los números.'));} return null; }
+    return subir(nums);
+  }
+  bSub.onclick=()=>cargarPendientes(true);
+  bPeg.onclick=()=>cargarPendientes(true);
+  ta.addEventListener('keydown',e=>{ if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){ e.preventDefault(); cargarPendientes(true); } });
   bPrevS.onclick=async()=>{
     exRes.innerHTML=''; bPrevS.disabled=true; bPrevS.innerHTML='<span class="spin"></span>';
     try{
@@ -1645,6 +1663,15 @@ async function pintarSalida(zona){
     bPrevS.disabled=false; bPrevS.textContent='Ver prevista';
   };
   bConf.onclick=async()=>{
+    // si quedaron números pegados o un Excel sin cargar, los cargo primero
+    const pend=await pendientes();
+    if(pend.length){
+      if(!confirm('Hay '+pend.length+' números pegados/en el Excel que todavía no se cargaron a la salida. ¿Los cargo ahora y después confirmo la baja?'))return;
+      const r=await subir(pend); if(!r) return;
+      if((r.no_existen&&r.no_existen.length)||(r.no_activas&&r.no_activas.length)){
+        if(!confirm('Algunas caravanas no se pudieron tomar (mirá el detalle arriba). ¿Confirmar la baja igual con las que sí están en la salida?'))return;
+      }
+    }
     if(!confirm('¿Confirmar la baja? Las caravanas de la salida quedan dadas de baja.'))return;
     try{ const r=await rpc('confirmar_salida',{p_salida_id:SALIDA.id});
       res.innerHTML='';res.append(el('div',{className:'tarjeta'},el('h3',{},'Baja confirmada ✔'),el('div',{},`${r.confirmadas} caravanas dadas de baja.`)));
