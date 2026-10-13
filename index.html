@@ -1830,9 +1830,13 @@ async function exportarBackup(btn){
       desde+=pag;
     }
     const enc=['CARAVANA','CARAVANA ORIG','CATEGORIA','ESTADO','LOTE','PROPIETARIO','FECHA INGRESO','FECHA 40 DIAS','FECHA 90 DIAS','SENASA'];
-    const aoa=[enc].concat(rows.map(r=>[r.numero,r.numero_orig||'',r.categoria||'',r.estado,r.lote||'',r.propietario||'',
+    // Electrónicas siempre con el 0 adelante (15 dígitos, formato SENASA); las físicas alfanuméricas quedan igual.
+    const aoa=[enc].concat(rows.map(r=>[con0(r.numero),con0(r.numero_orig||r.numero),r.categoria||'',r.estado,r.lote||'',r.propietario||'',
       r.fecha_ingreso||'',r.fecha_40||'',r.fecha_90||'',r.senasa_estado||'']));
     const ws=XLSX.utils.aoa_to_sheet(aoa);
+    // las dos columnas de caravana van como TEXTO para que Excel no les saque el 0
+    for(let i=1;i<aoa.length;i++){ for(const col of ['A','B']){ const c=ws[col+(i+1)]; if(c){ c.t='s'; c.v=String(c.v); } } }
+    ws['!cols']=[{wch:18},{wch:18},{wch:12},{wch:10},{wch:14},{wch:18},{wch:13},{wch:13},{wch:13},{wch:12}];
     const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'caravanas');
     XLSX.writeFile(wb,'caravanas_backup_'+hoyISO()+'.xlsx');
   }catch(e){ alert('No se pudo generar el backup: '+errMsg(e)); }
