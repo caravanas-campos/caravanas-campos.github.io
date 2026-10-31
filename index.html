@@ -1355,14 +1355,18 @@ async function abrirCaja(rotulo,tr){
 
   // Barra de edición (sólo admin, sólo cajas reales)
   const editable = esAdmin && rotulo!=='(sin lote)';
-  let bSacar, bBorrar;
+  let bSacar, bBorrar, bRot, rotNuevo;
   if(editable){
     inner.append(el('div',{className:'mut',style:'margin-bottom:.4rem'},
-      'Tildá las caravanas que querés sacar de la caja, o eliminá el rótulo entero. Las que saques vuelven a CLASIFICAR (siguen activas).'));
-    const barra=el('div',{className:'fila',style:'margin-bottom:.5rem'});
+      'Tildá las caravanas y rotulalas en otra caja, sacalas de esta caja (vuelven a CLASIFICAR, siguen activas) o eliminá el rótulo entero.'));
+    const barra=el('div',{className:'fila',style:'margin-bottom:.5rem;align-items:end'});
+    rotNuevo=el('input',{placeholder:'Nuevo rótulo (ej: 25-260)'});
+    bRot=el('button',{},'Rotular seleccionadas');
     bSacar=el('button',{className:'sec'},'Sacar seleccionadas de la caja');
     bBorrar=el('button',{className:'gris'},'Eliminar rótulo de la caja');
-    barra.append(el('div',{style:'flex:0 0 auto'},bSacar),el('div',{style:'flex:0 0 auto'},bBorrar),el('div'));
+    barra.append(el('div',{style:'flex:1;min-width:160px'},el('label',{},'Rotular las tildadas como caja'),rotNuevo),
+                 el('div',{style:'flex:0 0 auto'},bRot),
+                 el('div',{style:'flex:0 0 auto'},bSacar),el('div',{style:'flex:0 0 auto'},bBorrar),el('div'));
     inner.append(barra);
   }
 
@@ -1385,6 +1389,21 @@ async function abrirCaja(rotulo,tr){
   if((d||[]).length>300) inner.append(el('div',{className:'mut',style:'margin-top:.3rem'},'… y '+(d.length-300)+' más'));
 
   if(editable){
+    bRot.onclick=async()=>{
+      const rot=rotNuevo.value.trim();
+      if(!rot){ alert('Escribí el rótulo de la caja nueva.'); rotNuevo.focus(); return; }
+      if(rot===rotulo){ alert('Ese es el rótulo de esta misma caja; escribí otro.'); return; }
+      const ids=[...inner.querySelectorAll('input.cbCaja:checked')].map(c=>Number(c.value));
+      if(!ids.length){ alert('Tildá al menos una caravana para rotular.'); return; }
+      const ya=await loteExiste(rot);
+      const msg = ya>0 ? `⚠ La caja «${rot}» YA EXISTE (tiene ${ya} caravanas). ¿Igual querés pasar estas ${ids.length} a esa misma caja?`
+                       : `¿Rotular ${ids.length} caravana(s) de «${rotulo}» como caja «${rot}»?`;
+      if(!confirm(msg)) return;
+      bRot.disabled=true; bRot.innerHTML='<span class="spin"></span>';
+      try{ const r=await rpc('asignar_lote',{p_rotulo:rot,p_ids:ids});
+        alert(`${r.asignadas} caravana(s) → caja ${r.rotulo}`+(r.mixta?'\n⚠ Esa caja quedó con más de una categoría.':'')); irA('lotes');
+      }catch(e){ alert('Error: '+errMsg(e)); bRot.disabled=false; bRot.textContent='Rotular seleccionadas'; }
+    };
     bSacar.onclick=async()=>{
       const ids=[...inner.querySelectorAll('input.cbCaja:checked')].map(c=>Number(c.value));
       if(!ids.length){ alert('Tildá al menos una caravana para sacar.'); return; }
