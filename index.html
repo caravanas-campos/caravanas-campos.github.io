@@ -30,6 +30,8 @@
   .chip{display:inline-block;padding:.15em .6em;border-radius:20px;font-size:.78rem;font-weight:700}
   .ok{background:#e6efdc;color:#2f5a2a}
   .warn{background:#f6e3d3;color:#8a4a12}
+  .vis-ok{background:#dcefe0;color:#1f5e2e} .vis-no{background:#f5d6d6;color:#8a1f1f} .vis-inex{background:#e9e6df;color:#5b5b5b}
+  .vis-proc{background:#fbefc9;color:#7a5a05} .vis-ped{background:#dde8f5;color:#1f4d8a}
   .mut{color:var(--gris);font-size:.86rem}
   table{border-collapse:collapse;width:100%;font-size:.9rem}
   th,td{text-align:left;padding:.45em .5em;border-bottom:1px solid var(--linea)}
@@ -408,6 +410,9 @@ async function vPanel(cont){
   );
   cont.append(kpis, det);
 
+  // --- VISEC: resumen del campo actual (electrónicas / visuales) + últimas corridas del robot ---
+  cont.append(await cuadroVisec());
+
   // --- otros campos (resumen chico, sin repetir el actual) ---
   const otros=todos.filter(c=>c.id!==CAMPO.id);
   if(otros.length){
@@ -427,6 +432,43 @@ async function vPanel(cont){
     });
     box.append(grid); cont.append(box);
   }
+}
+
+// Cuadro VISEC del Panel: habilitadas / inhabilitadas / … por tipo para el campo actual, el resto de los campos
+// en una línea, y las últimas corridas del robot.
+async function cuadroVisec(){
+  const box=el('div',{className:'tarjeta'});
+  box.append(el('h3',{},'VISEC — estado de las caravanas'),
+    el('div',{className:'mut',style:'margin-bottom:.5rem'},'Lo consulta el robot de la oficina en carne.visec.com.ar, día y noche, para las caravanas activas y en pre-despacho. Para una consulta urgente, usá "Pedir a VISEC" en Consultar o en el detalle de una caja.'));
+  let rs=[], cor=[];
+  try{ const r=await sb.from('v_visec_resumen').select('*'); if(r.error) throw r.error; rs=r.data||[]; }
+  catch(e){ box.append(el('div',{className:'aviso'},'Todavía no está instalado el módulo VISEC en la base ('+errMsg(e)+').')); return box; }
+  try{ const c=await sb.from('visec_corridas').select('*').order('id',{ascending:false}).limit(5); cor=c.data||[]; }catch(e){}
+  const mios=rs.filter(x=>x.campo_id===CAMPO.id);
+  if(!mios.length){ box.append(el('div',{className:'mut'},'Este campo no tiene caravanas activas.')); }
+  else{
+    const tb=el('table');
+    tb.append(el('thead',{},filaTH(['Tipo','Habilitadas','Inhabilitadas','Inexistentes','En proceso','Error ARCA','Sin consultar','Total'])));
+    const tbody=el('tbody');
+    const fila=(nombre,x,b)=>{ const mk=(v,cls)=>{ const t=el('td',{className:'num'}); t.append(b?el('b',{},fmt(v)):el('span',{className:cls||''},fmt(v))); return t; };
+      return el('tr',{},td(nombre),mk(x.habilitadas),mk(x.inhabilitadas,x.inhabilitadas>0?'vis-no chip':''),mk(x.inexistentes),mk(x.en_proceso),mk(x.error_arca),mk(x.sin_consultar),mk(x.total)); };
+    mios.sort((a,b)=>a.tipo.localeCompare(b.tipo)).forEach(x=>tbody.append(fila(x.tipo==='electronica'?'Electrónicas':'Visuales',x)));
+    if(mios.length>1){ const t={}; ['habilitadas','inhabilitadas','inexistentes','en_proceso','error_arca','sin_consultar','total'].forEach(k=>t[k]=mios.reduce((a,x)=>a+Number(x[k]||0),0)); tbody.append(fila('Total',t,true)); }
+    tb.append(tbody); box.append(tb);
+    const ult=mios.map(x=>x.ultima_consulta).filter(Boolean).sort().pop();
+    if(ult) box.append(el('div',{className:'mut',style:'margin-top:.3rem'},'Última consulta guardada: '+fechaAR(ult)+' '+String(ult).slice(11,16)));
+  }
+  const otros=rs.filter(x=>x.campo_id!==CAMPO.id);
+  if(otros.length){
+    const porCampo={}; otros.forEach(x=>{ const k=x.campo+(x.propietario?' · '+x.propietario:''); const o=porCampo[k]||(porCampo[k]={h:0,i:0,s:0,t:0}); o.h+=Number(x.habilitadas); o.i+=Number(x.inhabilitadas); o.s+=Number(x.sin_consultar); o.t+=Number(x.total); });
+    box.append(el('div',{className:'mut',style:'margin-top:.5rem'},'Otros campos: '+Object.entries(porCampo).map(([k,o])=>`${k}: ${fmt(o.h)} habilitadas, ${fmt(o.i)} inhabilitadas, ${fmt(o.s)} sin consultar (de ${fmt(o.t)})`).join(' · ')));
+  }
+  if(cor.length){
+    const c=cor[0];
+    const est={corriendo:'corriendo ahora',ok:'terminó bien',error:'terminó con error',sin_pendientes:'sin pendientes'}[c.estado]||c.estado;
+    box.append(el('div',{className:'mut',style:'margin-top:.4rem'},`Robot: última corrida ${fechaAR(c.inicio)} ${String(c.inicio).slice(11,16)} — ${est}${c.cantidad!=null?', '+fmt(c.cantidad)+' resultados':''}${c.detalle?' ('+esc(c.detalle).slice(0,120)+')':''}`));
+  }
+  return box;
 }
 
 // ======================================================================
@@ -474,23 +516,46 @@ async function consultarNums(nums,res){
   const cargando=el('div',{className:'mut'},'Consultando…'); res.append(cargando);
   let d;
   try{ d=await rpc('consultar',{p_numeros:nums}); }catch(e){cargando.textContent='Error: '+errMsg(e);return;}
+  const vm = (d.items&&d.items.length) ? await visecDe(d.items.map(it=>it.caravana)) : new Map();
   cargando.remove();
   const box=el('div',{className:'tarjeta'});
-  box.append(el('div',{className:'mut',style:'margin-bottom:.5rem'},
+  const cab=el('div',{className:'fila',style:'align-items:center;margin-bottom:.5rem'});
+  cab.append(el('div',{className:'mut'},
     `${d.total} encontrada(s)`+(d.no_estan&&d.no_estan.length?` · ${d.no_estan.length} sin registrar`:'')));
+  // filtro por estado VISEC + pedir consulta
+  const fv=el('select');
+  [['','VISEC: todas'],['HABILITADA','Habilitadas'],['INHABILITADA','Inhabilitadas'],['NÚMERO INEXISTENTE','Inexistentes'],['proceso','En proceso / error'],['sin','Sin consultar']]
+    .forEach(([v,tx])=>fv.append(el('option',{value:v},tx)));
+  cab.append(el('div',{style:'flex:0 0 auto'},fv));
+  if(ROL==='admin' && d.items && d.items.length){
+    cab.append(el('div',{style:'flex:0 0 auto'},botonPedirVisec(()=>d.items.filter(it=>!(vm.get(visecNorm(it.caravana))||{}).estado).map(it=>it.caravana),()=>consultarNums(nums,res))));
+  }
+  box.append(cab);
   if(d.items&&d.items.length){
     const tb=el('table');
-    tb.append(el('thead',{},filaTH(['Caravana','Categoría','Estado','SENASA','Ingreso','40 días','90 días'])));
+    tb.append(el('thead',{},filaTH(['Caravana','Categoría','Estado','SENASA','VISEC','Ingreso','40 días','90 días'])));
     const tbody=el('tbody');
-    for(const it of d.items){
-      const tr=el('tr');
-      tr.append(td(it.caravana,'num'),td(it.categoria),
-        tdChip(it.activa?'activa':it.estado, it.activa?'ok':'warn'),
-        td(it.estado_senasa||'—'),
-        td(it.fecha_activacion||'—','num'),td(it.fecha_40||'—','num'),td(it.fecha_90||'—','num'));
-      tbody.append(tr);
-    }
+    const pintar=()=>{
+      tbody.innerHTML=''; let n=0;
+      for(const it of d.items){
+        const v=vm.get(visecNorm(it.caravana))||{};
+        const f=fv.value;
+        if(f==='sin' && v.estado) continue;
+        if(f==='proceso' && !VISEC_PROV.includes(v.estado)) continue;
+        if(f && f!=='sin' && f!=='proceso' && v.estado!==f) continue;
+        const tr=el('tr');
+        tr.append(td(it.caravana,'num'),td(it.categoria),
+          tdChip(it.activa?'activa':it.estado, it.activa?'ok':'warn'),
+          td(it.estado_senasa||'—'), tdVisec(v),
+          td(it.fecha_activacion||'—','num'),td(it.fecha_40||'—','num'),td(it.fecha_90||'—','num'));
+        tbody.append(tr); n++;
+      }
+      if(!n) tbody.append(el('tr',{},el('td',{colSpan:8,className:'mut'},'Ninguna caravana con ese estado VISEC.')));
+    };
+    fv.onchange=pintar; pintar();
     tb.append(tbody); box.append(tb);
+    const vc={}; d.items.forEach(it=>{ const v=vm.get(visecNorm(it.caravana))||{}; const k=v.estado?(VISEC_LBL[v.estado]||v.estado):(v.pedida?'Pedida':'Sin consultar'); vc[k]=(vc[k]||0)+1; });
+    box.append(el('div',{className:'mut',style:'margin-top:.4rem'},'VISEC: '+Object.entries(vc).sort((a,b)=>b[1]-a[1]).map(([k,v])=>v+' '+k.toLowerCase()).join(' · ')));
   }
   if(d.no_estan&&d.no_estan.length){
     box.append(el('div',{className:'aviso'},'No están en el sistema: '+d.no_estan.slice(0,40).join(', ')+(d.no_estan.length>40?'…':'')));
@@ -500,6 +565,47 @@ async function consultarNums(nums,res){
 function filaTH(arr){const tr=el('tr');arr.forEach(x=>tr.append(el('th',{},x)));return tr;}
 function td(v,cls){return el('td',{className:cls||''},esc(v));}
 function tdChip(txt,cls){const t=el('td');t.append(el('span',{className:'chip '+cls},txt));return t;}
+
+// ───────── VISEC (https://carne.visec.com.ar) · estado por caravana que carga el robot de la oficina ─────────
+const VISEC_LBL={'HABILITADA':'Habilitada','INHABILITADA':'Inhabilitada','NÚMERO INEXISTENTE':'Inexistente','EN PROCESO':'En proceso','EN ESPERA':'En proceso','EN VALIDACIÓN':'En proceso','ERROR ARCA':'Error ARCA'};
+const VISEC_PROV=['EN PROCESO','EN ESPERA','EN VALIDACIÓN','ERROR ARCA'];
+function visecChip(v){
+  // v = {estado, pedida, observacion, fecha} (puede venir vacío)
+  v=v||{};
+  if(!v.estado){ return v.pedida ? el('span',{className:'chip vis-ped',title:'Consulta pedida: el robot la toma en la próxima vuelta'},'Pedida') : el('span',{className:'mut'},'—'); }
+  const cls = v.estado==='HABILITADA'?'vis-ok' : v.estado==='INHABILITADA'?'vis-no' : v.estado==='NÚMERO INEXISTENTE'?'vis-inex' : 'vis-proc';
+  const t='VISEC: '+v.estado+(v.fecha?' ('+fechaAR(v.fecha)+')':'')+(v.observacion?' — '+v.observacion:'')+(v.informe?' · informe '+v.informe:'');
+  return el('span',{className:'chip '+cls,title:t},VISEC_LBL[v.estado]||v.estado);
+}
+function tdVisec(v){ const t=el('td'); t.append(visecChip(v)); if(v&&v.fecha) t.append(el('span',{className:'mut',style:'margin-left:.3rem;font-size:.75rem'},fechaAR(v.fecha))); return t; }
+function fechaAR(iso){ if(!iso) return ''; const p=String(iso).slice(0,10).split('-'); return p.length===3?`${p[2]}/${p[1]}/${p[0]}`:iso; }
+// Estado VISEC de una lista de números → Map(numero_normalizado → fila)
+async function visecDe(nums){
+  const m=new Map(); nums=(nums||[]).filter(Boolean);
+  for(let i=0;i<nums.length;i+=500){
+    try{ const r=await rpc('visec_estado_de',{p_numeros:nums.slice(i,i+500)}); (r||[]).forEach(x=>m.set(x.caravana,x)); }
+    catch(e){ console.warn('visec_estado_de',e); break; }
+  }
+  return m;
+}
+function visecNorm(n){ n=String(n||'').trim(); return /^\d+$/.test(n)?n.replace(/^0+/,''):n.toUpperCase(); }
+// Botón "Pedir a VISEC": pide la consulta urgente de los números dados (sólo admin)
+function botonPedirVisec(obtenerNums, despues){
+  const b=el('button',{className:'sec'},'Pedir a VISEC');
+  b.title='Pide al robot que consulte estas caravanas en VISEC antes que el resto (las toma en la próxima vuelta).';
+  b.onclick=async()=>{
+    const nums=(obtenerNums()||[]).filter(Boolean);
+    if(!nums.length){ alert('No hay caravanas para pedir.'); return; }
+    if(!confirm('¿Pedir la consulta VISEC de '+nums.length+' caravana(s)? El robot las toma primero en su próxima vuelta.')) return;
+    b.disabled=true; b.innerHTML='<span class="spin"></span>';
+    try{ const n=await rpc('visec_solicitar',{p_numeros:nums,p_usuario:(USUARIO&&USUARIO.email)||''});
+      alert(n+' consulta(s) pedida(s) a VISEC'+(nums.length-n>0?' ('+(nums.length-n)+' ya estaban pedidas o no están en el padrón)':'')+'.');
+      if(despues) despues();
+    }catch(e){ alert('Error: '+errMsg(e)); }
+    b.disabled=false; b.textContent='Pedir a VISEC';
+  };
+  return b;
+}
 
 // ======================================================================
 //  VISTA · DASHBOARD (observadores / dueños) — pensado para celular también
@@ -1370,13 +1476,20 @@ async function abrirCaja(rotulo,tr){
     inner.append(barra);
   }
 
+  const vm=await visecDe((d||[]).slice(0,300).map(f=>f.numero));
+  if(editable){
+    const bv=botonPedirVisec(()=>{ const ids=new Set([...inner.querySelectorAll('input.cbCaja:checked')].map(c=>Number(c.value)));
+        const sel=(d||[]).filter(f=>ids.has(f.id)); return (sel.length?sel:(d||[])).map(f=>f.numero); });
+    bv.textContent='Pedir a VISEC (tildadas, o toda la caja)';
+    inner.querySelector('.fila').append(el('div',{style:'flex:0 0 auto'},bv));
+  }
   const tb=el('table');
-  const cols=(editable?['✓']:[]).concat(['Caravana','Categoría','Estado','Activación','40 días','90 días']);
+  const cols=(editable?['✓']:[]).concat(['Caravana','Categoría','Estado','VISEC','Activación','40 días','90 días']);
   tb.append(el('thead',{},filaTH(cols)));
   const tbody=el('tbody');
   (d||[]).slice(0,300).forEach(f=>{
     const celdas=[td(f.numero,'num'),td(f.categoria),
-      tdChip(f.activa?'activa':f.estado,f.activa?'ok':'warn'),td(f.fecha_activacion||'—','num'),
+      tdChip(f.activa?'activa':f.estado,f.activa?'ok':'warn'),tdVisec(vm.get(visecNorm(f.numero))),td(f.fecha_activacion||'—','num'),
       td(f.fecha_40||'—','num'),td(f.fecha_90||'—','num')];
     if(editable){
       const cb=el('input',{type:'checkbox',value:f.id,className:'cbCaja'});
