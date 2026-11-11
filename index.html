@@ -494,6 +494,114 @@ function vConsultar(cont){
   const res=el('div'); cont.append(res);
   btn.onclick=()=>consultarNums(desglosar(inp.value),res);
   file.onchange=async()=>{ const nums=await numerosDeArchivo(file.files[0]); consultarNums(nums,res); };
+
+  cont.append(listadoCaravanas());
+}
+
+// ───────── Listado de caravanas del campo con filtros + descarga a Excel ─────────
+function listadoCaravanas(){
+  const t=el('div',{className:'tarjeta',style:'margin-top:1rem'});
+  t.append(el('h3',{},'Listado de caravanas del campo'),
+    el('div',{className:'mut',style:'margin-bottom:.6rem'},'Filtrá por estado, categoría, caja, VISEC y plazos; después podés bajar el resultado a Excel.'));
+  const sel=(ops)=>{ const x=el('select'); ops.forEach(([v,tx])=>x.append(el('option',{value:v},tx))); return x; };
+  const fEstado=sel([['activa','Activas'],['en_baja','En pre-despacho'],['baja','Dadas de baja'],['virgen','Vírgenes'],['anulada','Anuladas'],['','Todas']]);
+  const fCat=sel([['','Todas las categorías']]);
+  const fLote=sel([['','Todas las cajas']]);
+  const fVisec=sel([['','VISEC: todas'],['HABILITADA','Habilitadas'],['INHABILITADA','Inhabilitadas (no aptas)'],['NÚMERO INEXISTENTE','Inexistentes'],['proceso','En proceso / error ARCA'],['pedida','Pedidas'],['sin','Sin consultar']]);
+  const f90=sel([['','90 días: todas'],['si','Con 90 días cumplidos'],['no','Sin 90 días']]);
+  const f40=sel([['','40 días: todas'],['si','Con 40 días cumplidos'],['no','Sin 40 días']]);
+  const fNum=el('input',{placeholder:'Número contiene…'});
+  const fObs=el('input',{placeholder:'Obs. VISEC contiene (ej: RENSPA)'});
+  const fila=el('div',{className:'fila'});
+  fila.append(el('div',{},el('label',{},'Estado'),fEstado),el('div',{},el('label',{},'Categoría'),fCat),el('div',{},el('label',{},'Caja'),fLote),el('div',{},el('label',{},'VISEC'),fVisec));
+  const fila2=el('div',{className:'fila',style:'margin-top:.5rem'});
+  fila2.append(el('div',{},el('label',{},'90 días'),f90),el('div',{},el('label',{},'40 días'),f40),el('div',{},el('label',{},'Número'),fNum),el('div',{},el('label',{},'Observación VISEC'),fObs));
+  t.append(fila,fila2);
+  const acc=el('div',{className:'fila',style:'margin-top:.7rem;align-items:center'});
+  const bVer=el('button',{},'Ver listado');
+  const bXls=el('button',{className:'sec'},'Descargar Excel'); bXls.disabled=true;
+  const info=el('span',{className:'mut'});
+  acc.append(el('div',{style:'flex:0 0 auto'},bVer),el('div',{style:'flex:0 0 auto'},bXls),el('div',{},info));
+  t.append(acc);
+  const out=el('div',{style:'margin-top:.6rem'}); t.append(out);
+
+  let datos=[], estadoCargado=null, filtradas=[];
+  async function cargar(){
+    const est=fEstado.value;
+    if(estadoCargado===est) return;
+    info.textContent='Cargando…';
+    let rows=[], desde=0; const pag=1000;
+    while(true){
+      let q=sb.from('v_caravanas').select('numero,estado,categoria,lote,fecha_ingreso,fecha_40,fecha_90,dias,activa,visec_estado,visec_fecha,visec_observacion,visec_pedida').order('numero').range(desde,desde+pag-1);
+      if(est) q=q.eq('estado',est);
+      const {data,error}=await q; if(error) throw error;
+      rows=rows.concat(data||[]); if(!data||data.length<pag) break; desde+=pag;
+    }
+    datos=rows; estadoCargado=est;
+    // opciones de categoría y caja según lo cargado
+    const cats=[...new Set(rows.map(r=>r.categoria).filter(Boolean))].sort();
+    const lotes=[...new Set(rows.map(r=>r.lote||''))].sort((a,b)=>a.localeCompare(b,'es',{numeric:true}));
+    const vc=fCat.value, vl=fLote.value;
+    fCat.innerHTML=''; [['','Todas las categorías'],...cats.map(c=>[c,c])].forEach(([v,tx])=>fCat.append(el('option',{value:v},tx))); fCat.value=cats.includes(vc)?vc:'';
+    fLote.innerHTML=''; [['','Todas las cajas'],...lotes.map(l=>[l||'__sin__',l||'(sin caja)'])].forEach(([v,tx])=>fLote.append(el('option',{value:v},tx))); fLote.value=lotes.map(l=>l||'__sin__').includes(vl)?vl:'';
+  }
+  function filtrar(){
+    const hoy=hoyISO(), num=fNum.value.trim(), obs=fObs.value.trim().toLowerCase();
+    return datos.filter(r=>{
+      if(fCat.value && r.categoria!==fCat.value) return false;
+      if(fLote.value && (r.lote||'__sin__')!==fLote.value) return false;
+      const v=fVisec.value;
+      if(v==='sin' && r.visec_estado) return false;
+      if(v==='pedida' && !r.visec_pedida) return false;
+      if(v==='proceso' && !VISEC_PROV.includes(r.visec_estado)) return false;
+      if(v && !['sin','pedida','proceso'].includes(v) && r.visec_estado!==v) return false;
+      const c90=!!(r.fecha_90 && r.fecha_90<=hoy), c40=!!(r.fecha_40 && r.fecha_40<=hoy);
+      if(f90.value==='si' && !c90) return false; if(f90.value==='no' && c90) return false;
+      if(f40.value==='si' && !c40) return false; if(f40.value==='no' && c40) return false;
+      if(num && !String(r.numero).includes(num.replace(/^0+/,''))) return false;
+      if(obs && !(r.visec_observacion||'').toLowerCase().includes(obs)) return false;
+      return true;
+    });
+  }
+  function pintar(){
+    out.innerHTML=''; filtradas=filtrar(); bXls.disabled=!filtradas.length;
+    const vc={}; filtradas.forEach(r=>{ const k=r.visec_estado?(VISEC_LBL[r.visec_estado]||r.visec_estado):(r.visec_pedida?'Pedida':'Sin consultar'); vc[k]=(vc[k]||0)+1; });
+    info.textContent=`${fmt(filtradas.length)} de ${fmt(datos.length)} caravanas`+(filtradas.length?` · VISEC: ${Object.entries(vc).sort((a,b)=>b[1]-a[1]).map(([k,v])=>v+' '+k.toLowerCase()).join(', ')}`:'');
+    if(!filtradas.length){ out.append(el('div',{className:'mut'},'Ninguna caravana con esos filtros.')); return; }
+    const tb=el('table'); tb.append(el('thead',{},filaTH(['Caravana','Categoría','Estado','Caja','VISEC','Obs. VISEC','Ingreso','40 días','90 días'])));
+    const tbody=el('tbody'); tb.append(tbody); out.append(tb);
+    let mostradas=0;
+    const pintarFilas=(n)=>{ filtradas.slice(mostradas,mostradas+n).forEach(r=>{
+        const hoy=hoyISO();
+        tbody.append(el('tr',{},td(r.numero,'num'),td(r.categoria||'—'),tdChip(r.activa?'activa':r.estado,r.activa?'ok':'warn'),td(r.lote||'—'),
+          tdVisec({estado:r.visec_estado,pedida:r.visec_pedida,observacion:r.visec_observacion,fecha:r.visec_fecha}),
+          el('td',{className:'mut',style:'max-width:260px;font-size:.78rem'},esc(r.visec_observacion||'')),
+          td(r.fecha_ingreso||'—','num'),td(r.fecha_40||'—',(r.fecha_40&&r.fecha_40<=hoy)?'num':'num mut'),td(r.fecha_90||'—',(r.fecha_90&&r.fecha_90<=hoy)?'num':'num mut'))); });
+      mostradas=Math.min(mostradas+n,filtradas.length); };
+    pintarFilas(100);
+    const pie=el('div',{style:'margin-top:.4rem'}); out.append(pie);
+    const actualizar=()=>{ pie.innerHTML='';
+      if(mostradas<filtradas.length){ const link=el('a',{style:'cursor:pointer;font-weight:600'},`▼ Ver ${Math.min(500,filtradas.length-mostradas)} más (${fmt(filtradas.length-mostradas)} restantes)`); link.onclick=()=>{ pintarFilas(500); actualizar(); }; pie.append(link); }
+      else pie.append(el('span',{className:'mut'},`Mostrando las ${fmt(filtradas.length)}`)); };
+    actualizar();
+  }
+  bVer.onclick=async()=>{ bVer.disabled=true; try{ await cargar(); pintar(); }catch(e){ out.innerHTML=''; out.append(el('div',{className:'aviso'},'Error: '+errMsg(e))); info.textContent=''; } bVer.disabled=false; };
+  [fCat,fLote,fVisec,f90,f40].forEach(x=>x.onchange=()=>{ if(estadoCargado!==null) pintar(); });
+  [fNum,fObs].forEach(x=>x.addEventListener('input',()=>{ if(estadoCargado!==null) pintar(); }));
+  fEstado.onchange=()=>bVer.onclick();
+  bXls.onclick=()=>{
+    const hoy=hoyISO();
+    const enc=['CARAVANA','CATEGORIA','ESTADO','CAJA','VISEC','FECHA VISEC','OBS VISEC','FECHA INGRESO','FECHA 40 DIAS','40 CUMPLIDOS','FECHA 90 DIAS','90 CUMPLIDOS'];
+    const aoa=[enc].concat(filtradas.map(r=>[con0(r.numero),r.categoria||'',r.estado,r.lote||'',r.visec_estado||(r.visec_pedida?'PEDIDA':''),r.visec_fecha||'',r.visec_observacion||'',
+      r.fecha_ingreso||'',r.fecha_40||'',(r.fecha_40&&r.fecha_40<=hoy)?'SI':'NO',r.fecha_90||'',(r.fecha_90&&r.fecha_90<=hoy)?'SI':'NO']));
+    const ws=XLSX.utils.aoa_to_sheet(aoa);
+    for(let i=1;i<aoa.length;i++){ const c=ws['A'+(i+1)]; if(c){ c.t='s'; c.v=String(c.v); } }
+    ws['!cols']=[{wch:18},{wch:12},{wch:10},{wch:12},{wch:20},{wch:12},{wch:50},{wch:13},{wch:13},{wch:11},{wch:13},{wch:11}];
+    const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'caravanas');
+    const partes=[(CAMPO&&CAMPO.nombre||'campo').replace(/\s+/g,'_'),fEstado.value||'todas',fVisec.value?('visec_'+fVisec.value.replace(/[^a-z]/gi,'').toLowerCase()):'',fLote.value?('caja_'+fLote.value.replace(/[^\w-]/g,'')):'',hoyISO()].filter(Boolean);
+    XLSX.writeFile(wb,'caravanas_'+partes.join('_')+'.xlsx');
+  };
+  return t;
 }
 function desglosar(txt){ return String(txt||'').split(/[\s,;]+/).filter(Boolean); }
 async function numerosDeArchivo(f){
