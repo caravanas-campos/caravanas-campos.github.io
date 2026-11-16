@@ -638,6 +638,13 @@ async function consultarNums(nums,res){
   if(ROL==='admin' && d.items && d.items.length){
     cab.append(el('div',{style:'flex:0 0 auto'},botonPedirVisec(()=>d.items.filter(it=>!(vm.get(visecNorm(it.caravana))||{}).estado).map(it=>it.caravana),()=>consultarNums(nums,res))));
   }
+  if(d.items && d.items.length){
+    const bInf=el('button',{className:'sec'},'Imprimir informe');
+    const bXls=el('button',{className:'gris'},'Excel');
+    bInf.onclick=()=>informeConsulta(d, vm, fv.value, nums);
+    bXls.onclick=()=>excelConsulta(d, vm, fv.value);
+    cab.append(el('div',{style:'flex:0 0 auto'},bInf),el('div',{style:'flex:0 0 auto'},bXls));
+  }
   box.append(cab);
   if(d.items&&d.items.length){
     const tb=el('table');
@@ -669,6 +676,73 @@ async function consultarNums(nums,res){
     box.append(el('div',{className:'aviso'},'No están en el sistema: '+d.no_estan.slice(0,40).join(', ')+(d.no_estan.length>40?'…':'')));
   }
   res.append(box);
+}
+// Filas del resultado de Consultar que pasan el filtro VISEC elegido (mismo criterio que la tabla en pantalla)
+function filasConsulta(d, vm, filtro){
+  return (d.items||[]).filter(it=>{
+    const v=vm.get(visecNorm(it.caravana))||{};
+    if(filtro==='sin') return !v.estado;
+    if(filtro==='proceso') return VISEC_PROV.includes(v.estado);
+    if(filtro) return v.estado===filtro;
+    return true;
+  }).map(it=>({it, v:vm.get(visecNorm(it.caravana))||{}}));
+}
+// Informe imprimible (PDF desde el diálogo de impresión) con el resultado de una consulta
+function informeConsulta(d, vm, filtro, pedidas){
+  const filas=filasConsulta(d, vm, filtro);
+  if(!filas.length){ alert('No hay caravanas para el informe con ese filtro.'); return; }
+  const h=x=>String(x==null?'':x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const hoy=hoyISO(), ahora=new Date();
+  const fechaHora=fechaAR(hoy)+' '+String(ahora.getHours()).padStart(2,'0')+':'+String(ahora.getMinutes()).padStart(2,'0');
+  const vis=v=>v.estado?(VISEC_LBL[v.estado]||v.estado)+(v.fecha?' ('+fechaAR(v.fecha)+')':''):(v.pedida?'Pedida':'Sin consultar');
+  const cuenta={}; filas.forEach(({v})=>{ const k=v.estado?(VISEC_LBL[v.estado]||v.estado):(v.pedida?'Pedida':'Sin consultar'); cuenta[k]=(cuenta[k]||0)+1; });
+  const cats={}; filas.forEach(({it})=>{ const k=it.categoria||'—'; cats[k]=(cats[k]||0)+1; });
+  const c90=filas.filter(({it})=>it.fecha_90&&it.fecha_90<=hoy).length, c40=filas.filter(({it})=>it.fecha_40&&it.fecha_40<=hoy).length;
+  const noEstan=(d.no_estan||[]);
+  const tr=filas.map(({it,v},i)=>`<tr><td class="n">${i+1}</td><td class="mono">${h(con0(it.caravana))}</td><td>${h(it.categoria||'—')}</td><td>${h(it.activa?'activa':it.estado)}</td><td>${h(it.lote||'—')}</td>`+
+    `<td class="${v.estado==='HABILITADA'?'ok':v.estado==='INHABILITADA'?'no':''}">${h(vis(v))}</td><td class="obs">${h(v.observacion||'')}</td>`+
+    `<td>${h(fechaAR(it.fecha_activacion))}</td><td>${h(fechaAR(it.fecha_40))}${it.fecha_40&&it.fecha_40<=hoy?' ✔':''}</td><td>${h(fechaAR(it.fecha_90))}${it.fecha_90&&it.fecha_90<=hoy?' ✔':''}</td></tr>`).join('');
+  const html=`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Informe de caravanas ${h(CAMPO&&CAMPO.nombre||'')} ${h(fechaAR(hoy))}</title>
+  <style>
+    @page{size:A4 landscape;margin:12mm}
+    body{font:10pt Arial,Helvetica,sans-serif;color:#000;margin:0}
+    h1{font-size:15pt;margin:0 0 2px} .sub{color:#444;margin:0 0 8px}
+    .res{display:flex;gap:18px;flex-wrap:wrap;margin:6px 0 10px;font-size:9.5pt} .res b{font-size:11pt}
+    table{width:100%;border-collapse:collapse} th,td{border:1px solid #999;padding:2px 5px;font-size:8.5pt;text-align:left;vertical-align:top}
+    th{background:#eee} td.n{color:#666;text-align:right;width:3%} td.mono{font-family:"Courier New",monospace} td.obs{font-size:7.5pt;color:#333;max-width:260px}
+    td.ok{color:#1f5e2e;font-weight:bold} td.no{color:#8a1f1f;font-weight:bold}
+    tr{page-break-inside:avoid} thead{display:table-header-group}
+    .pie{margin-top:10px;font-size:8.5pt;color:#444} .nop{margin:8px 0;text-align:center} @media print{.nop{display:none}}
+  </style></head><body>
+  <div class="nop"><button onclick="window.print()">Imprimir / guardar PDF</button></div>
+  <h1>Informe de consulta de caravanas</h1>
+  <div class="sub">${h(CAMPO&&CAMPO.nombre||'')}${CAMPO&&CAMPO.propietario?' · '+h(CAMPO.propietario):''} · emitido el ${h(fechaHora)}${filtro?' · filtro VISEC: '+h(filtro==='sin'?'sin consultar':filtro==='proceso'?'en proceso / error':VISEC_LBL[filtro]||filtro):''}</div>
+  <div class="res"><div>Consultadas: <b>${(pedidas||[]).length||filas.length}</b></div><div>En el sistema: <b>${filas.length}</b></div>${noEstan.length?`<div>No están en el sistema: <b>${noEstan.length}</b></div>`:''}
+    <div>Con 90 días: <b>${c90}</b></div><div>Con 40 días: <b>${c40}</b></div>
+    <div>VISEC: ${Object.entries(cuenta).map(([k,n])=>`${k} <b>${n}</b>`).join(' · ')}</div>
+    <div>Categorías: ${Object.entries(cats).map(([k,n])=>`${h(k)} <b>${n}</b>`).join(' · ')}</div></div>
+  <table><thead><tr><th>#</th><th>Caravana</th><th>Categoría</th><th>Estado</th><th>Caja</th><th>VISEC</th><th>Observación VISEC</th><th>Ingreso</th><th>40 días</th><th>90 días</th></tr></thead><tbody>${tr}</tbody></table>
+  ${noEstan.length?`<div class="pie"><b>No están en el sistema (${noEstan.length}):</b> ${h(noEstan.map(n=>String(n).length>=13?con0(n):n).join(', '))}</div>`:''}
+  <div class="pie">Estado VISEC según consultas del robot en carne.visec.com.ar (fecha entre paréntesis). ✔ = plazo cumplido al ${h(fechaAR(hoy))}.</div>
+  </body></html>`;
+  const w=window.open('','_blank');
+  if(!w){ alert('El navegador bloqueó la ventana del informe. Permití las ventanas emergentes para este sitio.'); return; }
+  w.document.open(); w.document.write(html); w.document.close();
+}
+// Excel con el resultado de una consulta
+function excelConsulta(d, vm, filtro){
+  const filas=filasConsulta(d, vm, filtro);
+  if(!filas.length){ alert('No hay caravanas para exportar con ese filtro.'); return; }
+  const hoy=hoyISO();
+  const enc=['CARAVANA','CATEGORIA','ESTADO','CAJA','VISEC','FECHA VISEC','OBS VISEC','FECHA INGRESO','FECHA 40 DIAS','40 CUMPLIDOS','FECHA 90 DIAS','90 CUMPLIDOS'];
+  const aoa=[enc].concat(filas.map(({it,v})=>[con0(it.caravana),it.categoria||'',it.activa?'activa':it.estado,it.lote||'',v.estado||(v.pedida?'PEDIDA':''),v.fecha||'',v.observacion||'',
+    it.fecha_activacion||'',it.fecha_40||'',(it.fecha_40&&it.fecha_40<=hoy)?'SI':'NO',it.fecha_90||'',(it.fecha_90&&it.fecha_90<=hoy)?'SI':'NO']));
+  (d.no_estan||[]).forEach(n=>aoa.push([String(n).length>=13?con0(n):String(n),'','NO ESTÁ EN EL SISTEMA','','','','','','','','','']));
+  const ws=XLSX.utils.aoa_to_sheet(aoa);
+  for(let i=1;i<aoa.length;i++){ const c=ws['A'+(i+1)]; if(c){ c.t='s'; c.v=String(c.v); } }
+  ws['!cols']=[{wch:18},{wch:12},{wch:12},{wch:12},{wch:20},{wch:12},{wch:50},{wch:13},{wch:13},{wch:11},{wch:13},{wch:11}];
+  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'consulta');
+  XLSX.writeFile(wb,'consulta_caravanas_'+(CAMPO&&CAMPO.nombre||'campo').replace(/\s+/g,'_')+'_'+hoy+'.xlsx');
 }
 function filaTH(arr){const tr=el('tr');arr.forEach(x=>tr.append(el('th',{},x)));return tr;}
 function td(v,cls){return el('td',{className:cls||''},esc(v));}
