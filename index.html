@@ -1613,6 +1613,7 @@ function vLotes(cont){
             res.append(el('div',{className:'tarjeta'},el('h3',{},'Rotuladas ✔'),
               el('div',{},`${r.asignadas} caravanas → caja ${r.rotulo}`),
               r.mixta?el('div',{className:'aviso'},'⚠ Esta caja quedó con más de una categoría.'):null));
+            prepararSiguienteCaja();
             await pintarResumen(res);
           }catch(e){ alert('Error: '+errMsg(e)); bRotSel.disabled=false; bRotSel.textContent='Rotular seleccionadas'; }
         };
@@ -1635,11 +1636,20 @@ function vLotes(cont){
         el('div',{},`${r.asignadas} caravanas → caja ${r.rotulo}`),
         r.mixta?el('div',{className:'aviso'},'⚠ Esta caja quedó con más de una categoría. Recordá: una caja = una sola categoría.'):null,
         (r.no_existen&&r.no_existen.length)?el('div',{className:'aviso'},'No existían: '+r.no_existen.join(', ')):null));
+      prepararSiguienteCaja();
       await pintarResumen(res);
     }catch(e){res.innerHTML='';res.append(el('div',{className:'aviso'},'Error: '+errMsg(e)));}
     bRot.disabled=false;bRot.textContent='Rotular';
   };
   pintarResumen(res);
+}
+// Rótulo siguiente: suma 1 al primer grupo de dígitos (C410-2026 → C411-2026, 25-260 → 26-260); si no hay números, lo deja igual.
+function siguienteRotulo(r){ return String(r||'').replace(/\d+/, m=>String(Number(m)+1).padStart(m.length,'0')); }
+// Después de rotular, dejar el formulario listo para la caja siguiente
+function prepararSiguienteCaja(){
+  const rot=$('#lRot'); if(rot){ const sig=siguienteRotulo(rot.value.trim()); if(sig!==rot.value.trim()) rot.value=sig; }
+  const d=$('#lD'), h=$('#lH');
+  if(d && h && /^\d+$/.test(h.value.trim())){ const prev=h.value.trim(); d.value=String(BigInt(prev)+1n).padStart(prev.length,'0'); d.dispatchEvent(new Event('input')); }
 }
 // Cuántas caravanas hay ya en una caja con ese rótulo (0 = no existe).
 async function loteExiste(rotulo){
