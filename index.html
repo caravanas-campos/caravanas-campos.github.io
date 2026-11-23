@@ -625,6 +625,8 @@ async function consultarNums(nums,res){
   let d;
   try{ d=await rpc('consultar',{p_numeros:nums}); }catch(e){cargando.textContent='Error: '+errMsg(e);return;}
   const vm = (d.items&&d.items.length) ? await visecDe(d.items.map(it=>it.caravana)) : new Map();
+  const dm = (d.items&&d.items.length) ? await dtesDe(d.items.map(it=>it.caravana)) : new Map();
+  (d.items||[]).forEach(it=>{ const x=dm.get(visecNorm(it.caravana))||{}; it.dte=x.dte||''; it.dte_fecha=x.dte_fecha||''; it.origen=x.origen||''; it.sal=x.sal||''; it.sal_fecha=x.sal_fecha||''; it.destino=x.destino||''; });
   cargando.remove();
   const box=el('div',{className:'tarjeta'});
   const cab=el('div',{className:'fila',style:'align-items:center;margin-bottom:.5rem'});
@@ -648,7 +650,7 @@ async function consultarNums(nums,res){
   box.append(cab);
   if(d.items&&d.items.length){
     const tb=el('table');
-    tb.append(el('thead',{},filaTH(['Caravana','Categoría','Estado','SENASA','VISEC','Ingreso','40 días','90 días'])));
+    tb.append(el('thead',{},filaTH(['Caravana','Categoría','Estado','DTe ingreso','DTe salida','SENASA','VISEC','Ingreso','40 días','90 días'])));
     const tbody=el('tbody');
     const pintar=()=>{
       tbody.innerHTML=''; let n=0;
@@ -661,11 +663,12 @@ async function consultarNums(nums,res){
         const tr=el('tr');
         tr.append(td(it.caravana,'num'),td(it.categoria),
           tdChip(it.activa?'activa':it.estado, it.activa?'ok':'warn'),
+          tdDte(dm.get(visecNorm(it.caravana))), tdSalida(dm.get(visecNorm(it.caravana))),
           td(it.estado_senasa||'—'), tdVisec(v),
           td(it.fecha_activacion||'—','num'),td(it.fecha_40||'—','num'),td(it.fecha_90||'—','num'));
         tbody.append(tr); n++;
       }
-      if(!n) tbody.append(el('tr',{},el('td',{colSpan:8,className:'mut'},'Ninguna caravana con ese estado VISEC.')));
+      if(!n) tbody.append(el('tr',{},el('td',{colSpan:10,className:'mut'},'Ninguna caravana con ese estado VISEC.')));
     };
     fv.onchange=pintar; pintar();
     tb.append(tbody); box.append(tb);
@@ -691,6 +694,7 @@ function filasConsulta(d, vm, filtro){
 function filaInforme(it, v){
   v=v||{};
   return {numero:it.caravana||it.numero, categoria:it.categoria||'', estado:it.activa?'activa':it.estado, lote:it.lote||'',
+          dte:it.dte||'', dte_fecha:it.dte_fecha||'', origen:it.origen||'', sal:it.sal||'', sal_fecha:it.sal_fecha||'', destino:it.destino||'',
           fecha_ingreso:it.fecha_activacion||it.fecha_ingreso||'', fecha_40:it.fecha_40||'', fecha_90:it.fecha_90||'',
           visec:{estado:v.estado||it.visec_estado||null, fecha:v.fecha||it.visec_fecha||null, observacion:v.observacion||it.visec_observacion||null, pedida:v.pedida||it.visec_pedida||false}};
 }
@@ -705,7 +709,9 @@ function informeCaravanas({titulo, subtitulo, filas, noEstan, consultadas}){
   const cats={}; filas.forEach(f=>{ const k=f.categoria||'—'; cats[k]=(cats[k]||0)+1; });
   const c90=filas.filter(f=>f.fecha_90&&f.fecha_90<=hoy).length, c40=filas.filter(f=>f.fecha_40&&f.fecha_40<=hoy).length;
   noEstan=noEstan||[];
-  const tr=filas.map((f,i)=>`<tr><td class="n">${i+1}</td><td class="mono">${h(con0(f.numero))}</td><td>${h(f.categoria||'—')}</td><td>${h(f.estado)}</td><td>${h(f.lote||'—')}</td>`+
+  const conDte=filas.some(f=>f.dte||f.sal);
+  const dteTd=f=>conDte?`<td>${h(f.dte||'—')}${f.dte_fecha||f.origen?`<div class="obs">${h([f.dte_fecha?fechaAR(f.dte_fecha):'',f.origen].filter(Boolean).join(' · '))}</div>`:''}</td><td>${h(f.sal||'—')}${f.sal_fecha||f.destino?`<div class="obs">${h([f.sal_fecha?fechaAR(f.sal_fecha):'',f.destino].filter(Boolean).join(' · '))}</div>`:''}</td>`:'';
+  const tr=filas.map((f,i)=>`<tr><td class="n">${i+1}</td><td class="mono">${h(con0(f.numero))}</td><td>${h(f.categoria||'—')}</td><td>${h(f.estado)}</td><td>${h(f.lote||'—')}</td>${dteTd(f)}`+
     `<td class="${f.visec.estado==='HABILITADA'?'ok':f.visec.estado==='INHABILITADA'?'no':''}">${h(vis(f.visec))}</td><td class="obs">${h(f.visec.observacion||'')}</td>`+
     `<td>${h(fechaAR(f.fecha_ingreso))}</td><td>${h(fechaAR(f.fecha_40))}${f.fecha_40&&f.fecha_40<=hoy?' ✔':''}</td><td>${h(fechaAR(f.fecha_90))}${f.fecha_90&&f.fecha_90<=hoy?' ✔':''}</td></tr>`).join('');
   const html=`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${h(titulo)} ${h(CAMPO&&CAMPO.nombre||'')} ${h(fechaAR(hoy))}</title>
@@ -727,7 +733,7 @@ function informeCaravanas({titulo, subtitulo, filas, noEstan, consultadas}){
     <div>Con 90 días: <b>${c90}</b></div><div>Con 40 días: <b>${c40}</b></div>
     <div>VISEC: ${Object.entries(cuenta).map(([k,n])=>`${k} <b>${n}</b>`).join(' · ')}</div>
     <div>Categorías: ${Object.entries(cats).map(([k,n])=>`${h(k)} <b>${n}</b>`).join(' · ')}</div></div>
-  <table><thead><tr><th>#</th><th>Caravana</th><th>Categoría</th><th>Estado</th><th>Caja</th><th>VISEC</th><th>Observación VISEC</th><th>Ingreso</th><th>40 días</th><th>90 días</th></tr></thead><tbody>${tr}</tbody></table>
+  <table><thead><tr><th>#</th><th>Caravana</th><th>Categoría</th><th>Estado</th><th>Caja</th>${conDte?'<th>DTe ingreso</th><th>DTe salida</th>':''}<th>VISEC</th><th>Observación VISEC</th><th>Ingreso</th><th>40 días</th><th>90 días</th></tr></thead><tbody>${tr}</tbody></table>
   ${noEstan.length?`<div class="pie"><b>No están en el sistema (${noEstan.length}):</b> ${h(noEstan.map(n=>String(n).length>=13?con0(n):n).join(', '))}</div>`:''}
   <div class="pie">Estado VISEC según consultas del robot en carne.visec.com.ar (fecha entre paréntesis). ✔ = plazo cumplido al ${h(fechaAR(hoy))}.</div>
   </body></html>`;
@@ -739,13 +745,14 @@ function informeCaravanas({titulo, subtitulo, filas, noEstan, consultadas}){
 function excelCaravanas(nombre, filas, noEstan){
   if(!filas.length){ alert('No hay caravanas para exportar.'); return; }
   const hoy=hoyISO();
-  const enc=['CARAVANA','CATEGORIA','ESTADO','CAJA','VISEC','FECHA VISEC','OBS VISEC','FECHA INGRESO','FECHA 40 DIAS','40 CUMPLIDOS','FECHA 90 DIAS','90 CUMPLIDOS'];
-  const aoa=[enc].concat(filas.map(f=>[con0(f.numero),f.categoria||'',f.estado,f.lote||'',f.visec.estado||(f.visec.pedida?'PEDIDA':''),f.visec.fecha||'',f.visec.observacion||'',
+  const enc=['CARAVANA','CATEGORIA','ESTADO','CAJA','DTE INGRESO','FECHA DTE','ORIGEN','DTE SALIDA','FECHA SALIDA','DESTINO','VISEC','FECHA VISEC','OBS VISEC','FECHA INGRESO','FECHA 40 DIAS','40 CUMPLIDOS','FECHA 90 DIAS','90 CUMPLIDOS'];
+  const aoa=[enc].concat(filas.map(f=>[con0(f.numero),f.categoria||'',f.estado,f.lote||'',f.dte||'',f.dte_fecha||'',f.origen||'',f.sal||'',f.sal_fecha||'',f.destino||'',
+    f.visec.estado||(f.visec.pedida?'PEDIDA':''),f.visec.fecha||'',f.visec.observacion||'',
     f.fecha_ingreso||'',f.fecha_40||'',(f.fecha_40&&f.fecha_40<=hoy)?'SI':'NO',f.fecha_90||'',(f.fecha_90&&f.fecha_90<=hoy)?'SI':'NO']));
-  (noEstan||[]).forEach(n=>aoa.push([String(n).length>=13?con0(n):String(n),'','NO ESTÁ EN EL SISTEMA','','','','','','','','','']));
+  (noEstan||[]).forEach(n=>aoa.push([String(n).length>=13?con0(n):String(n),'','NO ESTÁ EN EL SISTEMA','','','','','','','','','','','','','','','']));
   const ws=XLSX.utils.aoa_to_sheet(aoa);
-  for(let i=1;i<aoa.length;i++){ const c=ws['A'+(i+1)]; if(c){ c.t='s'; c.v=String(c.v); } }
-  ws['!cols']=[{wch:18},{wch:12},{wch:12},{wch:12},{wch:20},{wch:12},{wch:50},{wch:13},{wch:13},{wch:11},{wch:13},{wch:11}];
+  for(let i=1;i<aoa.length;i++){ for(const col of ['A','E','H']){ const c=ws[col+(i+1)]; if(c){ c.t='s'; c.v=String(c.v); } } }
+  ws['!cols']=[{wch:18},{wch:12},{wch:12},{wch:12},{wch:13},{wch:11},{wch:22},{wch:13},{wch:11},{wch:18},{wch:20},{wch:12},{wch:50},{wch:13},{wch:13},{wch:11},{wch:13},{wch:11}];
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'caravanas');
   XLSX.writeFile(wb,nombre.replace(/[^\w-]+/g,'_')+'_'+(CAMPO&&CAMPO.nombre||'campo').replace(/\s+/g,'_')+'_'+hoy+'.xlsx');
 }
@@ -792,6 +799,28 @@ async function visecDe(nums){
   }
   return m;
 }
+// DTe (guía) de ingreso y de salida de una lista de números → Map(numero → {dte, dte_fecha, origen, sal, sal_fecha, destino})
+async function dtesDe(nums){
+  const m=new Map(); nums=[...new Set((nums||[]).map(visecNorm).filter(Boolean))];
+  try{
+    let filas=[];
+    for(let i=0;i<nums.length;i+=300){
+      const {data,error}=await sb.from('v_caravanas').select('numero,guia_id,salida_id,origen').in('numero',nums.slice(i,i+300));
+      if(error) throw error; filas=filas.concat(data||[]);
+    }
+    const gids=[...new Set(filas.map(f=>f.guia_id).filter(Boolean))], sids=[...new Set(filas.map(f=>f.salida_id).filter(Boolean))];
+    const G=new Map(), S=new Map();
+    for(let i=0;i<gids.length;i+=300){ const {data}=await sb.from('guias').select('id,numero,fecha').in('id',gids.slice(i,i+300)); (data||[]).forEach(g=>G.set(g.id,g)); }
+    for(let i=0;i<sids.length;i+=300){ const {data}=await sb.from('salidas').select('id,numero,fecha,destino').in('id',sids.slice(i,i+300)); (data||[]).forEach(x=>S.set(x.id,x)); }
+    filas.forEach(f=>{ const g=G.get(f.guia_id)||{}, sa=S.get(f.salida_id)||{};
+      m.set(f.numero,{dte:g.numero||'', dte_fecha:g.fecha||'', origen:f.origen||'', sal:sa.numero||'', sal_fecha:sa.fecha||'', destino:sa.destino||''}); });
+  }catch(e){ console.warn('dtesDe',e); }
+  return m;
+}
+function tdDte(x){ x=x||{}; const t=el('td',{className:'num'}); if(!x.dte){ t.textContent='—'; return t; }
+  t.append(el('span',{},x.dte)); const d=[x.dte_fecha?fechaAR(x.dte_fecha):'',x.origen].filter(Boolean).join(' · '); if(d) t.append(el('div',{className:'mut',style:'font-size:.74rem'},d)); return t; }
+function tdSalida(x){ x=x||{}; const t=el('td',{className:'num'}); if(!x.sal){ t.textContent='—'; return t; }
+  t.append(el('span',{},x.sal)); const d=[x.sal_fecha?fechaAR(x.sal_fecha):'',x.destino].filter(Boolean).join(' · '); if(d) t.append(el('div',{className:'mut',style:'font-size:.74rem'},d)); return t; }
 function visecNorm(n){ n=String(n||'').trim(); return /^\d+$/.test(n)?n.replace(/^0+/,''):n.toUpperCase(); }
 // Botón "Pedir a VISEC": pide la consulta urgente de los números dados (sólo admin)
 function botonPedirVisec(obtenerNums, despues){
@@ -1488,9 +1517,20 @@ function vLotes(cont){
       zona.append(el('label',{},'Cantidad (ej. 25)'),el('input',{id:'lCant',type:'number',min:'1',value:'25'}));
     }else if(modo.value==='rango'){
       const f=el('div',{className:'fila'});
-      f.append(el('div',{},el('label',{},'Desde'),el('input',{id:'lD',placeholder:'N° inicial'})),
-               el('div',{},el('label',{},'Hasta'),el('input',{id:'lH',placeholder:'N° final'})));
+      const iD=el('input',{id:'lD',placeholder:'N° inicial'});
+      const iH=el('input',{id:'lH',placeholder:'N° final (se completa solo: desde + 24 = 25 caravanas)'});
+      f.append(el('div',{},el('label',{},'Desde'),iD),
+               el('div',{},el('label',{},'Hasta'),iH));
       zona.append(f);
+      // Hasta se completa solo con 25 caravanas (desde + 24) mientras no lo hayas escrito a mano
+      let hastaAuto=true;
+      iH.addEventListener('input',()=>{ hastaAuto = iH.value.trim()===''; });
+      iD.addEventListener('input',()=>{
+        if(!hastaAuto) return;
+        const d=iD.value.trim();
+        if(/^\d+$/.test(d)){ try{ iH.value=String(BigInt(d)+24n).padStart(d.length,'0'); }catch(e){} }
+        else iH.value='';
+      });
     }else{
       zona.append(el('label',{},'Números'),el('textarea',{id:'lTxt',rows:4,placeholder:'Pegá los números o un rango 100-124'}));
     }
