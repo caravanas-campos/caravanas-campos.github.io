@@ -1063,6 +1063,30 @@ function vGuia(cont){
   t.append(acc);
   cont.append(t);
 
+  // --- Pre-ingresos mandados por el operario ---
+  const pre=el('div'); cont.append(pre);
+  let PREING=null;   // pre-ingreso que se está usando en el cierre electrónico
+  async function verPreingresos(){
+    pre.innerHTML='';
+    let lista=[]; try{ lista=(await rpc('preingresos_listar',{p_todos:false}))||[]; }catch(e){ return; }
+    if(!lista.length) return;
+    const box=el('div',{className:'tarjeta',style:'border-color:#9db8dd;background:#eaf1fb'});
+    box.append(el('h3',{},'Pre-ingresos del operario ('+lista.length+')'),
+      el('div',{className:'mut',style:'margin-bottom:.4rem'},'El operario leyó estas caravanas al llegar. Tocá "Usar en el cierre": los números pasan al cuadro de caravanas electrónicas de abajo; completá categoría, fecha, origen y DTe y cerrá la guía.'));
+    const tb=el('table'); tb.append(el('thead',{},filaTH(['Fecha','Quién','Nota','Caravanas','',''])));
+    const tbody=el('tbody');
+    lista.forEach(x=>{
+      const bUsar=el('button',{},'Usar en el cierre'); const bDesc=el('button',{className:'gris'},'Descartar');
+      bUsar.onclick=()=>{ PREING=x; feNums=(x.numeros||[]).slice(); feInfo.textContent='Pre-ingreso N° '+x.id+' del operario: '+feNums.length+' números listos. Completá los datos y cerrá la guía.'; feFile.value=''; if(x.nota) feOrigen.placeholder='Nota del operario: '+x.nota; te.scrollIntoView({behavior:'smooth'}); };
+      bDesc.onclick=async()=>{ if(!confirm('¿Descartar el pre-ingreso N° '+x.id+' ('+x.cantidad+' caravanas)?')) return; try{ await rpc('preingreso_resolver',{p_id:x.id,p_estado:'descartado'}); verPreingresos(); }catch(e){ alert(errMsg(e)); } };
+      const tdA=el('td'); tdA.append(bUsar); const tdB=el('td'); tdB.append(bDesc);
+      const tr=el('tr',{},td(fechaAR(String(x.creado).slice(0,10))+' '+String(x.creado).slice(11,16),'num'),td(x.creado_por||'—'),td(x.nota||'—'),td(x.cantidad,'num'),tdA,tdB);
+      tr.title=(x.numeros||[]).slice(0,30).join(', ')+((x.numeros||[]).length>30?'…':'');
+      tbody.append(tr);
+    });
+    tb.append(tbody); box.append(tb); pre.append(box);
+  }
+
   // --- Cierre con CARAVANAS ELECTRÓNICAS (Excel de números) ---
   const te=el('div',{className:'tarjeta',style:'margin-top:1rem;border-color:#93c5fd'});
   te.append(el('h3',{},'Caravanas electrónicas (subir Excel)'));
@@ -1132,6 +1156,7 @@ function vGuia(cont){
       box.append(botonDDJJ({guia:feNum.value||'S/N',fecha:feFecha.input.value,titular:feOrigen.value,...dd,
         guiaId:r.guia_id||r.id||null,numeros:nums,origenTxt:feOrigen.value,numeroGuia:feNum.value||'S/N'}));
       feRes.append(box);
+      if(PREING){ try{ await rpc('preingreso_resolver',{p_id:PREING.id,p_estado:'cargado',p_guia:feNum.value||'S/N'}); }catch(e){} PREING=null; feOrigen.placeholder='De quién vienen'; verPreingresos(); }
       feNums=[]; feFile.value=''; feInfo.textContent='';
       verHistGuias();
     }catch(e){ feRes.append(el('div',{className:'aviso'},'Error: '+errMsg(e))); }
@@ -1179,6 +1204,7 @@ function vGuia(cont){
     histBox.append(card);
   }
   verHistGuias();
+  verPreingresos();
 
   function grupos(){
     if(cat.value==='MIXTO'){
@@ -2202,13 +2228,34 @@ function vOperario(cont){
       tbody.append(tr);
     });
     tb.append(tbody); box.append(tb);
-    // mandar a carga
+    // exportar informe / excel
+    const filasInf=()=>enSis.map(f=>filaInforme({numero:f.numero,categoria:f.categoria,estado:f.estado,activa:f.estado==='activa',lote:f.lote,fecha_ingreso:f.fecha_ingreso,fecha_40:f.fecha_40,fecha_90:f.fecha_90,
+        visec_estado:f.visec_estado,visec_fecha:f.visec_fecha,visec_observacion:f.visec_observacion,visec_pedida:f.visec_pedida}));
+    const accExp=el('div',{className:'fila',style:'margin-top:.6rem'});
+    const bInf=el('button',{className:'sec'},'Exportar informe (PDF)'); const bXls=el('button',{className:'gris'},'Exportar Excel');
+    bInf.onclick=()=>informeCaravanas({titulo:'Informe de control del operario', subtitulo:'lector · '+nums.length+' leídas', filas:filasInf(), noEstan:noEstan.map(f=>f.numero), consultadas:nums.length});
+    bXls.onclick=()=>excelCaravanas('control_operario', filasInf(), noEstan.map(f=>f.numero));
+    accExp.append(el('div',{style:'flex:0 0 auto'},bInf),el('div',{style:'flex:0 0 auto'},bXls),el('div'));
+    box.append(accExp);
+    // mandar a carga (egreso) o a ingreso
     const acc=el('div',{className:'fila',style:'margin-top:.8rem;align-items:end'});
-    const nota=el('input',{placeholder:'Nota para el administrador (destino, comprador, camión…)'});
+    const nota=el('input',{placeholder:'Nota para el administrador (destino, comprador, camión, de dónde vienen…)'});
     const bMandar=el('button',{},'Mandar a carga ('+activas.length+')');
     bMandar.disabled=!activas.length;
-    acc.append(el('div',{style:'flex:2'},el('label',{},'Nota'),nota),el('div',{style:'flex:0 0 auto'},bMandar));
+    const bIngreso=el('button',{className:'sec'},'Mandar a ingreso ('+nums.length+')');
+    bIngreso.title='Deja un pre-ingreso con estos números para que el administrador cierre la guía con sus datos (categoría, fecha, origen, DTe).';
+    acc.append(el('div',{style:'flex:2'},el('label',{},'Nota'),nota),el('div',{style:'flex:0 0 auto'},bMandar),el('div',{style:'flex:0 0 auto'},bIngreso));
     box.append(acc);
+    bIngreso.onclick=async()=>{
+      let msg='¿Mandar a ingreso '+nums.length+' números? El administrador va a cerrar la guía con ellos.';
+      if(enSis.length) msg+='\n\nOJO: '+enSis.length+' de estos ya están en el sistema'+(activas.length?' ('+activas.length+' activas)':'')+'; el cierre de guía sólo da de alta las que no existen o están vírgenes.';
+      if(!confirm(msg)) return;
+      bIngreso.disabled=true; bIngreso.innerHTML='<span class="spin"></span>';
+      try{ const r=await rpc('operario_proponer_ingreso',{p_numeros:nums,p_nota:nota.value});
+        alert('Listo: pre-ingreso N° '+r.id+' con '+r.cantidad+' caravanas. El administrador lo ve en Cierre de guía.'); ta.value=''; file.value=''; res.innerHTML=''; verMias();
+      }catch(e){ alert('Error: '+errMsg(e)); }
+      bIngreso.disabled=false; bIngreso.textContent='Mandar a ingreso ('+nums.length+')';
+    };
     const avisos=[];
     if(noEstan.length) avisos.push(noEstan.length+' no están en el sistema y no se van a mandar.');
     if(noActivas.length) avisos.push(noActivas.length+' no están activas (ya salieron, están en otro pre-despacho o son vírgenes) y no se van a mandar.');
@@ -2235,15 +2282,29 @@ function vOperario(cont){
 
   async function verMias(){
     mis.innerHTML='';
-    let h=[]; try{ h=(await rpc('operario_mis_propuestas',{p_limite:30}))||[]; }catch(e){ return; }
+    let h=[], pi=[];
+    try{ h=(await rpc('operario_mis_propuestas',{p_limite:30}))||[]; }catch(e){}
+    try{ pi=(await rpc('preingresos_listar',{p_todos:true}))||[]; }catch(e){}
     const card=el('div',{className:'tarjeta',style:'margin-top:1rem'});
-    card.append(el('h3',{},'Mis envíos a carga'));
-    if(!h.length){ card.append(el('div',{className:'mut'},'Todavía no mandaste nada a carga.')); mis.append(card); return; }
-    const tb=el('table'); tb.append(el('thead',{},filaTH(['Fecha','Campo','Nota','Caravanas','N° guía','Estado'])));
-    const tbody=el('tbody');
-    h.forEach(x=>tbody.append(el('tr',{},td(fechaAR(x.fecha),'num'),td(x.campo||'—'),td(x.destino||'—'),td(x.cantidad,'num'),td(x.numero==='PROPUESTA'?'—':x.numero),
-      tdChip(x.estado==='confirmada'?'baja confirmada':'esperando al administrador',x.estado==='confirmada'?'ok':'warn'))));
-    tb.append(tbody); card.append(tb); mis.append(card);
+    card.append(el('h3',{},'Mis envíos'));
+    if(!h.length && !pi.length){ card.append(el('div',{className:'mut'},'Todavía no mandaste nada.')); mis.append(card); return; }
+    if(h.length){
+      card.append(el('div',{className:'mut',style:'margin:.3rem 0'},'A carga (egresos)'));
+      const tb=el('table'); tb.append(el('thead',{},filaTH(['Fecha','Campo','Nota','Caravanas','N° guía','Estado'])));
+      const tbody=el('tbody');
+      h.forEach(x=>tbody.append(el('tr',{},td(fechaAR(x.fecha),'num'),td(x.campo||'—'),td(x.destino||'—'),td(x.cantidad,'num'),td(x.numero==='PROPUESTA'?'—':x.numero),
+        tdChip(x.estado==='confirmada'?'baja confirmada':'esperando al administrador',x.estado==='confirmada'?'ok':'warn'))));
+      tb.append(tbody); card.append(tb);
+    }
+    if(pi.length){
+      card.append(el('div',{className:'mut',style:'margin:.6rem 0 .3rem'},'A ingreso'));
+      const tb=el('table'); tb.append(el('thead',{},filaTH(['Fecha','Nota','Caravanas','N° guía','Estado'])));
+      const tbody=el('tbody');
+      pi.forEach(x=>tbody.append(el('tr',{},td(fechaAR(String(x.creado).slice(0,10)),'num'),td(x.nota||'—'),td(x.cantidad,'num'),td(x.guia_numero||'—'),
+        tdChip(x.estado==='cargado'?'ingresado':x.estado==='descartado'?'descartado':'esperando al administrador',x.estado==='cargado'?'ok':'warn'))));
+      tb.append(tbody); card.append(tb);
+    }
+    mis.append(card);
   }
   verMias();
 }
