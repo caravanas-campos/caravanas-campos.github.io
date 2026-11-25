@@ -32,6 +32,7 @@
   .warn{background:#f6e3d3;color:#8a4a12}
   .vis-ok{background:#dcefe0;color:#1f5e2e} .vis-no{background:#f5d6d6;color:#8a1f1f} .vis-inex{background:#e9e6df;color:#5b5b5b}
   .vis-proc{background:#fbefc9;color:#7a5a05} .vis-ped{background:#dde8f5;color:#1f4d8a}
+  tr.propuesta td{background:#eaf1fb} .chip.oper{background:#dde8f5;color:#1f4d8a}
   .mut{color:var(--gris);font-size:.86rem}
   table{border-collapse:collapse;width:100%;font-size:.9rem}
   th,td{text-align:left;padding:.45em .5em;border-bottom:1px solid var(--linea)}
@@ -207,13 +208,13 @@ async function entrar(user){
   try{ const {data}=await sb.from('perfiles').select('rol,nombre').eq('id',user.id).single(); perfil=data; }catch(e){}
   ROL = (perfil&&perfil.rol)||'consulta';
   $('#userLbl').textContent = (perfil&&perfil.nombre)||user.email;
-  $('#rolLbl').textContent = ROL==='admin'?'· administrador':'· observador';
+  $('#rolLbl').textContent = ROL==='admin'?'· administrador':ROL==='operario'?'· operario':'· observador';
   $('#login').classList.add('oculto');
   $('#app').classList.remove('oculto');
   await cargarCampos();
-  if(ROL!=='admin') $('#campoBox').style.display='none';   // el observador ve todos los campos juntos
+  if(ROL!=='admin') $('#campoBox').style.display='none';   // el observador ve todos los campos juntos; el operario no elige campo
   construirMenu();
-  irA(ROL==='admin'?'panel':'dashboard');
+  irA(ROL==='admin'?'panel':ROL==='operario'?'operario':'dashboard');
 }
 
 // ---- Campos (establecimientos) ----
@@ -260,12 +261,14 @@ const VISTAS = {
   bajas:    {t:'Bajas',      admin:true, f:vBajas},
   stock:    {t:'Stock SENASA', admin:false, f:vStock},
   usuarios: {t:'Configuración', admin:true, f:vUsuarios},
+  operario: {t:'Operario',   admin:false, oper:true, f:vOperario},
 };
 let RUTA='panel';
 function construirMenu(){
   const m=$('#menu'); m.innerHTML='';
   for(const [k,v] of Object.entries(VISTAS)){
-    if(ROL!=='admin' && !v.obs) continue;      // observador: sólo el Dashboard
+    if(ROL==='operario'){ if(!v.oper) continue; }            // operario: sólo su pestaña
+    else if(ROL!=='admin' && !v.obs) continue;               // observador: sólo el Dashboard
     if(v.admin && ROL!=='admin') continue;
     m.append(el('a',{onclick:()=>irA(k),id:'nav-'+k},v.t));
   }
@@ -613,8 +616,8 @@ async function numerosDeArchivo(f){
   // busca la columna que más parezca caravanas (más celdas de 8+ dígitos)
   let mejor=0,mejorN=-1;
   const nc=Math.max(...rows.map(r=>r.length),0);
-  for(let c=0;c<nc;c++){let s=0;for(const r of rows){const v=String(r[c]||'').replace(/\D/g,'');if(v.length>=8)s++;}if(s>mejorN){mejorN=s;mejor=c;}}
-  const out=[]; for(const r of rows){const v=String(r[mejor]||'').trim();if(v && /\d/.test(v))out.push(v);}
+  for(let c=0;c<nc;c++){let s=0;for(const r of rows){const v=String(r[c]||'').replace(/\D/g,'');if(v.length>=12)s+=2;else if(v.length>=8)s++;}if(s>mejorN){mejorN=s;mejor=c;}}
+  const out=[]; for(const r of rows){let v=String(r[mejor]||'').trim(); if(/^[\d\s]+$/.test(v)) v=v.replace(/\s+/g,''); if(v && /\d/.test(v))out.push(v);}
   return out;
 }
 async function consultarNums(nums,res){
@@ -1525,9 +1528,14 @@ function vLotes(cont){
       // Hasta se completa solo con 25 caravanas (desde + 24) mientras no lo hayas escrito a mano
       let hastaAuto=true;
       iH.addEventListener('input',()=>{ hastaAuto = iH.value.trim()===''; });
+      const avisoD=el('div',{className:'aviso oculto',style:'margin-top:.4rem'}); zona.append(avisoD);
       iD.addEventListener('input',()=>{
-        if(!hastaAuto) return;
         const d=iD.value.trim();
+        // control de tipeo: una electrónica tiene 15 dígitos (032…)
+        const mal=/^\d+$/.test(d) && d.length!==15 && d.length>=10;
+        avisoD.classList.toggle('oculto',!mal);
+        if(mal) avisoD.textContent=`⚠ El número tiene ${d.length} dígitos; las electrónicas tienen 15 (ej: 032010038468100). Revisá si sobra o falta un dígito.`;
+        if(!hastaAuto) return;
         if(/^\d+$/.test(d)){ try{ iH.value=String(BigInt(d)+24n).padStart(d.length,'0'); }catch(e){} }
         else iH.value='';
       });
@@ -1891,16 +1899,23 @@ function vBajas(cont){
       el('div',{className:'mut',style:'margin-bottom:.4rem'},'Tocá una salida para ver las caravanas que salieron.'));
     try{
       const h=(await rpc('historial_salidas',{p_limite:100}))||[];
+      // obs de cada salida (las propuestas del operario vienen con 'OPERARIO:…')
+      const OBS=new Map();
+      try{ const {data}=await sb.from('salidas').select('id,obs,destino').in('id',h.map(x=>x.id)); (data||[]).forEach(x=>OBS.set(x.id,x)); }catch(e){}
+      const props=h.filter(x=>x.estado==='preparacion'&&((OBS.get(x.id)||{}).obs||'').startsWith('OPERARIO:'));
+      if(props.length) card.append(el('div',{className:'aviso',style:'background:#eaf1fb;border-color:#9db8dd;color:#1f4d8a'},
+        `Hay ${props.length} pre-despacho(s) mandado(s) por el operario esperando la guía y la confirmación (filas en celeste). Tocá "Continuar" en cada uno.`));
       if(!h.length){ card.append(el('div',{className:'mut'},'Todavía no hay salidas cargadas.')); }
       else{
         const tb=el('table');
         tb.append(el('thead',{},filaTH(['Fecha','N°','Destino','Objetivo','Cargadas','Estado',''])));
         const tbody=el('tbody');
         h.forEach(s=>{
+          const ob=(OBS.get(s.id)||{}).obs||''; const esProp=ob.startsWith('OPERARIO:');
           const acc=el('div',{className:'fila',style:'gap:.3rem'});
           if(s.estado==='preparacion'){
             const bCont=el('button',{className:'sec'},'Continuar');
-            bCont.onclick=(e)=>{ e.stopPropagation(); SALIDA={id:s.id,numero:s.numero,objetivo:s.objetivo}; pintarSalida(zona); window.scrollTo(0,0); };
+            bCont.onclick=(e)=>{ e.stopPropagation(); SALIDA={id:s.id,numero:s.numero,objetivo:s.objetivo,destino:s.destino,obs:ob}; pintarSalida(zona); window.scrollTo(0,0); };
             acc.append(el('div',{style:'flex:0 0 auto'},bCont));
           }
           const bDel=el('button',{className:'gris'},'Eliminar');
@@ -1910,8 +1925,9 @@ function vBajas(cont){
           };
           acc.append(el('div',{style:'flex:0 0 auto'},bDel));
           const tdacc=el('td'); tdacc.append(acc);
-          const tr=el('tr',{style:'cursor:pointer'},td(s.fecha,'num'),td(s.numero),td(s.destino||'—'),td(s.objetivo,'num'),td(s.cantidad,'num'),
-            tdChip(s.estado==='confirmada'?'baja confirmada':'en preparación', s.estado==='confirmada'?'ok':'warn'),tdacc);
+          const tdEst=tdChip(s.estado==='confirmada'?'baja confirmada':'en preparación', s.estado==='confirmada'?'ok':'warn');
+          if(esProp) tdEst.append(' ',el('span',{className:'chip oper',title:ob},'operario'));
+          const tr=el('tr',{style:'cursor:pointer',className:(esProp&&s.estado==='preparacion')?'propuesta':''},td(s.fecha,'num'),td(s.numero),td(s.destino||'—'),td(s.objetivo,'num'),td(s.cantidad,'num'),tdEst,tdacc);
           tr.onclick=()=>detalleCaravanasEnFila(tr,'salida_id',s.id,7,`salida ${s.numero||'S/N'} · ${s.destino||''} · ${fechaAR(s.fecha)}${s.estado==='confirmada'?' · baja confirmada':' · en preparación'}`);
           tbody.append(tr);
         });
@@ -1936,7 +1952,40 @@ async function pintarSalida(zona){
   zona.innerHTML='';
   if(!SALIDA)return;
   const t=el('div',{className:'tarjeta'});
-  t.append(el('h3',{},`Salida ${SALIDA.numero} · objetivo ${SALIDA.objetivo}`));
+  const esProp=(SALIDA.obs||'').startsWith('OPERARIO:');
+  const titulo=el('h3',{},`Salida ${SALIDA.numero} · objetivo ${SALIDA.objetivo}`); t.append(titulo);
+  if(esProp){
+    t.append(el('div',{className:'aviso',style:'background:#eaf1fb;border-color:#9db8dd;color:#1f4d8a'},
+      'Pre-despacho mandado por el operario ('+esc(SALIDA.obs.replace('OPERARIO:',''))+'). Las caravanas ya están cargadas: ponele el N° de guía, copiá las caravanas para SIGSA y confirmá la baja.'));
+  }
+  // N° de guía y destino (editables mientras está en preparación)
+  const filaG=el('div',{className:'fila',style:'align-items:end;margin-bottom:.6rem'});
+  const iNum=el('input',{value:SALIDA.numero==='PROPUESTA'?'':(SALIDA.numero||''),placeholder:'N° de guía (DTe)'});
+  const iDest=el('input',{value:SALIDA.destino||'',placeholder:'Destino'});
+  const bGuardar=el('button',{className:'sec'},'Guardar N° / destino');
+  const bCopiar=el('button',{className:'gris'},'Copiar caravanas (con 0 adelante)');
+  filaG.append(el('div',{style:'flex:1'},el('label',{},'N° de guía'),iNum),el('div',{style:'flex:1'},el('label',{},'Destino'),iDest),
+               el('div',{style:'flex:0 0 auto'},bGuardar),el('div',{style:'flex:0 0 auto'},bCopiar));
+  t.append(filaG);
+  bGuardar.onclick=async()=>{
+    bGuardar.disabled=true;
+    try{ await rpc('editar_salida',{p_salida_id:SALIDA.id,p_numero:iNum.value.trim(),p_destino:iDest.value.trim()});
+      SALIDA.numero=iNum.value.trim()||SALIDA.numero; SALIDA.destino=iDest.value.trim()||SALIDA.destino;
+      titulo.textContent=`Salida ${SALIDA.numero} · objetivo ${SALIDA.objetivo}`; bGuardar.textContent='Guardado ✔'; setTimeout(()=>bGuardar.textContent='Guardar N° / destino',1500);
+      if(refHistSalidas) refHistSalidas();
+    }catch(e){ alert('Error: '+errMsg(e)); }
+    bGuardar.disabled=false;
+  };
+  bCopiar.onclick=async()=>{
+    try{
+      const {data}=await sb.from('v_caravanas').select('numero').eq('salida_id',SALIDA.id).order('numero');
+      const nums=(data||[]).map(x=>con0(x.numero)); if(!nums.length){ alert('La salida no tiene caravanas cargadas.'); return; }
+      const texto=nums.join('\n');
+      if(navigator.clipboard&&window.isSecureContext){ await navigator.clipboard.writeText(texto); }
+      else{ const x=document.createElement('textarea'); x.value=texto; x.style.position='fixed'; x.style.opacity='0'; document.body.appendChild(x); x.select(); document.execCommand('copy'); x.remove(); }
+      const o=bCopiar.textContent; bCopiar.textContent=`Copiadas ${nums.length} ✔`; setTimeout(()=>bCopiar.textContent=o,2500);
+    }catch(e){ alert('No se pudo copiar: '+errMsg(e)); }
+  };
 
   // subir excel
   const filaX=el('div',{className:'fila',style:'align-items:end'});
@@ -2062,7 +2111,9 @@ async function pintarSalida(zona){
         if(!confirm('Algunas caravanas no se pudieron tomar (mirá el detalle arriba). ¿Confirmar la baja igual con las que sí están en la salida?'))return;
       }
     }
-    if(!confirm('¿Confirmar la baja? Las caravanas de la salida quedan dadas de baja.'))return;
+    if(SALIDA.numero==='PROPUESTA' && !iNum.value.trim()){ alert('Ponele el N° de guía y tocá "Guardar N° / destino" antes de confirmar.'); iNum.focus(); return; }
+    if(SALIDA.numero==='PROPUESTA' && iNum.value.trim()){ try{ await rpc('editar_salida',{p_salida_id:SALIDA.id,p_numero:iNum.value.trim(),p_destino:iDest.value.trim()}); SALIDA.numero=iNum.value.trim(); }catch(e){ alert('No pude guardar el N° de guía: '+errMsg(e)); return; } }
+    if(!confirm('¿Confirmar la baja de la salida '+SALIDA.numero+'? Las caravanas de la salida quedan dadas de baja.'))return;
     try{ const r=await rpc('confirmar_salida',{p_salida_id:SALIDA.id});
       res.innerHTML='';res.append(el('div',{className:'tarjeta'},el('h3',{},'Baja confirmada ✔'),el('div',{},`${r.confirmadas} caravanas dadas de baja.`)));
       SALIDA=null;
@@ -2095,6 +2146,106 @@ async function estadoSalida(res){
     }
     res.append(box);
   }catch(e){ res.append(el('div',{className:'aviso'},'No pude leer las caravanas de la salida: '+errMsg(e))); }
+}
+
+// ======================================================================
+//  VISTA · OPERARIO  (sube el archivo del lector, ve estado/días/VISEC y manda a carga)
+// ======================================================================
+function vOperario(cont){
+  cont.append(el('h2',{},'Operario · control de caravanas'));
+  cont.append(el('div',{className:'mut',style:'margin-bottom:.8rem'},
+    'Subí el archivo del lector (CSV o Excel) o pegá los números. Te muestro categoría, días desde el ingreso, si cumplen 40 y 90 días y el estado VISEC con la fecha de la última consulta. Si está todo bien, "Mandar a carga" le deja al administrador un pre-despacho listo para ponerle la guía y confirmar.'));
+  const t=el('div',{className:'tarjeta'});
+  const fila=el('div',{className:'fila',style:'align-items:end'});
+  const file=el('input',{type:'file',accept:'.xlsx,.xls,.csv,.txt'});
+  const ta=el('textarea',{rows:3,placeholder:'…o pegá los números (uno por línea)'});
+  const bVer=el('button',{},'Consultar');
+  fila.append(el('div',{style:'flex:2'},el('label',{},'Archivo del lector'),file),el('div',{style:'flex:0 0 auto'},bVer));
+  t.append(fila, el('div',{style:'margin-top:.5rem'},el('label',{},'o pegar'),ta));
+  cont.append(t);
+  const res=el('div'); cont.append(res);
+  const mis=el('div'); cont.append(mis);
+
+  async function consultar(){
+    let nums=desglosar(ta.value);
+    if(file.files[0]) nums=nums.concat(await numerosDeArchivo(file.files[0]));
+    nums=[...new Set(nums.map(n=>String(n).replace(/\s+/g,'').trim()).filter(Boolean))];
+    res.innerHTML='';
+    if(!nums.length){ res.append(el('div',{className:'aviso'},'Subí el archivo o pegá los números.')); return; }
+    res.append(el('div',{className:'mut'},'Consultando '+nums.length+' caravanas…'));
+    let d; try{ d=await rpc('operario_consultar',{p_numeros:nums}); }catch(e){ res.innerHTML=''; res.append(el('div',{className:'aviso'},'Error: '+errMsg(e))); return; }
+    res.innerHTML='';
+    const filas=(d||[]); const hoy=hoyISO();
+    const enSis=filas.filter(f=>f.encontrada), noEstan=filas.filter(f=>!f.encontrada);
+    const activas=enSis.filter(f=>f.estado==='activa'), noActivas=enSis.filter(f=>f.estado!=='activa');
+    const inh=activas.filter(f=>f.visec_estado==='INHABILITADA'), sinVisec=activas.filter(f=>!f.visec_estado), sin90=activas.filter(f=>!f.cumple_90);
+    const box=el('div',{className:'tarjeta'});
+    const resumen=el('div',{className:'fila',style:'gap:1rem;margin-bottom:.5rem;flex-wrap:wrap'});
+    const kpi=(n,t,cls)=>{ const k=el('div',{style:'flex:0 0 auto'}); k.append(el('div',{style:'font-weight:800;font-size:1.25rem;'+(cls||'')},fmt(n)),el('div',{className:'mut'},t)); return k; };
+    resumen.append(kpi(nums.length,'leídas'),kpi(activas.length,'activas en el sistema','color:var(--verde)'),
+      kpi(activas.filter(f=>f.visec_estado==='HABILITADA').length,'VISEC habilitadas','color:#1f5e2e'),kpi(inh.length,'VISEC inhabilitadas',inh.length?'color:#8a1f1f':''),
+      kpi(sinVisec.length,'sin consulta VISEC'),kpi(sin90.length,'sin 90 días',sin90.length?'color:#7a5a05':''),kpi(noActivas.length+noEstan.length,'no activas / no están',(noActivas.length+noEstan.length)?'color:#8a1f1f':''));
+    box.append(resumen);
+    const tb=el('table'); tb.append(el('thead',{},filaTH(['Caravana','Campo','Categoría','Estado','Caja','Ingreso','Días','40 días','90 días','VISEC','Última consulta','Observación VISEC'])));
+    const tbody=el('tbody');
+    const orden=f=>(!f.encontrada?0:f.estado!=='activa'?1:f.visec_estado==='INHABILITADA'?2:!f.cumple_90?3:4);
+    filas.sort((a,b)=>orden(a)-orden(b)||String(a.numero).localeCompare(String(b.numero)));
+    filas.forEach(f=>{
+      const tr=el('tr');
+      if(!f.encontrada){ tr.append(td(con0(f.numero),'num'),el('td',{colSpan:11},el('span',{className:'chip warn'},'no está en el sistema'))); tbody.append(tr); return; }
+      const v={estado:f.visec_estado,pedida:f.visec_pedida,observacion:f.visec_observacion,fecha:f.visec_fecha};
+      tr.append(td(con0(f.numero),'num'),td(f.campo||'—'),td(f.categoria||'—'),tdChip(f.estado==='activa'?'activa':f.estado,f.estado==='activa'?'ok':'warn'),td(f.lote||'—'),
+        td(fechaAR(f.fecha_ingreso)||'—','num'),td(f.dias!=null?f.dias:'—','num'),
+        tdChip(f.cumple_40?'sí':'no',f.cumple_40?'ok':'warn'),tdChip(f.cumple_90?'sí':'no',f.cumple_90?'ok':'warn'),
+        (()=>{const c=el('td'); c.append(visecChip(v)); return c;})(), td(f.visec_fecha?fechaAR(f.visec_fecha):'—','num'),
+        el('td',{className:'mut',style:'max-width:260px;font-size:.78rem'},esc(f.visec_observacion||'')));
+      tbody.append(tr);
+    });
+    tb.append(tbody); box.append(tb);
+    // mandar a carga
+    const acc=el('div',{className:'fila',style:'margin-top:.8rem;align-items:end'});
+    const nota=el('input',{placeholder:'Nota para el administrador (destino, comprador, camión…)'});
+    const bMandar=el('button',{},'Mandar a carga ('+activas.length+')');
+    bMandar.disabled=!activas.length;
+    acc.append(el('div',{style:'flex:2'},el('label',{},'Nota'),nota),el('div',{style:'flex:0 0 auto'},bMandar));
+    box.append(acc);
+    const avisos=[];
+    if(noEstan.length) avisos.push(noEstan.length+' no están en el sistema y no se van a mandar.');
+    if(noActivas.length) avisos.push(noActivas.length+' no están activas (ya salieron, están en otro pre-despacho o son vírgenes) y no se van a mandar.');
+    if(inh.length) avisos.push(inh.length+' están INHABILITADAS en VISEC.');
+    if(sinVisec.length) avisos.push(sinVisec.length+' todavía no tienen consulta VISEC.');
+    if(sin90.length) avisos.push(sin90.length+' no cumplen los 90 días.');
+    if(avisos.length) box.append(el('div',{className:'aviso',style:'margin-top:.5rem'},'Atención: '+avisos.join(' ')));
+    bMandar.onclick=async()=>{
+      let msg='¿Mandar a carga '+activas.length+' caravanas activas? Quedan en pre-despacho para que el administrador las confirme.';
+      if(inh.length||sin90.length||sinVisec.length) msg+='\n\nOJO: '+[inh.length?inh.length+' inhabilitadas en VISEC':'',sin90.length?sin90.length+' sin 90 días':'',sinVisec.length?sinVisec.length+' sin consulta VISEC':''].filter(Boolean).join(', ')+'.';
+      if(!confirm(msg)) return;
+      bMandar.disabled=true; bMandar.innerHTML='<span class="spin"></span>';
+      try{
+        const r=await rpc('operario_proponer_salida',{p_numeros:activas.map(f=>f.numero),p_nota:nota.value});
+        if(r&&r.ok){ alert('Listo: '+r.cantidad+' caravanas quedaron en pre-despacho (propuesta N° '+r.salida_id+'). El administrador la ve destacada en Bajas.'); ta.value=''; file.value=''; res.innerHTML=''; verMias(); }
+        else alert('No se pudo mandar: '+((r.no_activas||[]).length?' no activas: '+r.no_activas.join(', '):'')+((r.no_existen||[]).length?' no existen: '+r.no_existen.join(', '):''));
+      }catch(e){ alert('Error: '+errMsg(e)); }
+      bMandar.disabled=false; bMandar.textContent='Mandar a carga ('+activas.length+')';
+    };
+    res.append(box);
+  }
+  bVer.onclick=consultar;
+  file.onchange=consultar;
+
+  async function verMias(){
+    mis.innerHTML='';
+    let h=[]; try{ h=(await rpc('operario_mis_propuestas',{p_limite:30}))||[]; }catch(e){ return; }
+    const card=el('div',{className:'tarjeta',style:'margin-top:1rem'});
+    card.append(el('h3',{},'Mis envíos a carga'));
+    if(!h.length){ card.append(el('div',{className:'mut'},'Todavía no mandaste nada a carga.')); mis.append(card); return; }
+    const tb=el('table'); tb.append(el('thead',{},filaTH(['Fecha','Campo','Nota','Caravanas','N° guía','Estado'])));
+    const tbody=el('tbody');
+    h.forEach(x=>tbody.append(el('tr',{},td(fechaAR(x.fecha),'num'),td(x.campo||'—'),td(x.destino||'—'),td(x.cantidad,'num'),td(x.numero==='PROPUESTA'?'—':x.numero),
+      tdChip(x.estado==='confirmada'?'baja confirmada':'esperando al administrador',x.estado==='confirmada'?'ok':'warn'))));
+    tb.append(tbody); card.append(tb); mis.append(card);
+  }
+  verMias();
 }
 
 // ======================================================================
@@ -2149,7 +2300,7 @@ async function vUsuarios(cont){
     tb.append(el('thead',{},filaTH(['Usuario','Rol','Activo',''])));
     const tbody=el('tbody');
     (data||[]).forEach(u=>{
-      const sel=el('select');[['consulta','observador (sólo Dashboard)'],['admin','administrador']].forEach(([r,t])=>sel.append(el('option',{value:r,selected:u.rol===r},t)));
+      const sel=el('select');[['consulta','observador (sólo Dashboard)'],['operario','operario (sólo pestaña Operario)'],['admin','administrador']].forEach(([r,t])=>sel.append(el('option',{value:r,selected:u.rol===r},t)));
       const b=el('button',{className:'sec'},'Guardar');
       b.onclick=async()=>{try{await rpc('set_rol',{p_uid:u.id,p_rol:sel.value,p_activo:true});b.textContent='✔';setTimeout(()=>b.textContent='Guardar',1200);}catch(e){alert(errMsg(e));}};
       tbody.append(el('tr',{},td(u.nombre||u.id),el('td',{},sel),td(u.activo?'Sí':'No'),el('td',{},b)));
