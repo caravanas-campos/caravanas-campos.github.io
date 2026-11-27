@@ -34,6 +34,9 @@
   .vis-proc{background:#fbefc9;color:#7a5a05} .vis-ped{background:#dde8f5;color:#1f4d8a}
   tr.propuesta td{background:#eaf1fb} .chip.oper{background:#dde8f5;color:#1f4d8a}
   .mut{color:var(--gris);font-size:.86rem}
+  .sem{display:inline-block;width:11px;height:11px;border-radius:50%;margin-right:.35em;vertical-align:middle}
+  tr.ses-h{cursor:pointer} tr.ses-h:hover td{background:#f4efe4}
+  tr.ses-d td{font-size:.82rem;background:#faf8f2}
   table{border-collapse:collapse;width:100%;font-size:.9rem}
   th,td{text-align:left;padding:.45em .5em;border-bottom:1px solid var(--linea)}
   th{color:var(--gris);font-size:.78rem;text-transform:uppercase;letter-spacing:.03em}
@@ -259,6 +262,7 @@ const VISTAS = {
   virgenes: {t:'Vírgenes',   admin:true, f:vVirgenes},
   lotes:    {t:'Lotes',      admin:true, f:vLotes},
   bajas:    {t:'Bajas',      admin:true, f:vBajas},
+  sesiones: {t:'Sesiones',   admin:false, obs:true, f:vSesiones},
   stock:    {t:'Stock SENASA', admin:false, f:vStock},
   usuarios: {t:'Configuración', admin:true, f:vUsuarios},
   operario: {t:'Operario',   admin:false, oper:true, f:vOperario},
@@ -773,7 +777,15 @@ function botonesInforme(titulo, subtitulo, nombreExcel, obtenerFilas){
   const bInf=el('button',{className:'sec'},'Imprimir informe'); const bXls=el('button',{className:'gris'},'Excel');
   bInf.onclick=()=>informeCaravanas({titulo, subtitulo, filas:obtenerFilas().map(f=>filaInforme(f))});
   bXls.onclick=()=>excelCaravanas(nombreExcel, obtenerFilas().map(f=>filaInforme(f)));
-  acc.append(el('div',{style:'flex:0 0 auto'},bInf),el('div',{style:'flex:0 0 auto'},bXls),el('div'));
+  const bCop=el('button',{className:'gris',title:'Copia los números de caravana (formato SENASA, uno por línea) para pegarlos en otro lado'},'Copiar caravanas');
+  bCop.onclick=async()=>{
+    const nums=[...new Set(obtenerFilas().map(f=>String(f.numero).length>=13?con0(f.numero):String(f.numero)))];
+    if(!nums.length){ alert('No hay caravanas para copiar.'); return; }
+    const txt=nums.join('\n');
+    try{ await navigator.clipboard.writeText(txt); const t=bCop.textContent; bCop.textContent=nums.length+' copiadas ✓'; setTimeout(()=>bCop.textContent=t,2000); }
+    catch(e){ prompt('Copiá las caravanas:', nums.join(' ')); }
+  };
+  acc.append(el('div',{style:'flex:0 0 auto'},bInf),el('div',{style:'flex:0 0 auto'},bXls),el('div',{style:'flex:0 0 auto'},bCop),el('div'));
   return acc;
 }
 function filaTH(arr){const tr=el('tr');arr.forEach(x=>tr.append(el('th',{},x)));return tr;}
@@ -2447,6 +2459,109 @@ async function exportarBackup(btn){
     XLSX.writeFile(wb,'caravanas_backup_'+hoyISO()+'.xlsx');
   }catch(e){ alert('No se pudo generar el backup: '+errMsg(e)); }
   btn.disabled=false; btn.textContent=txt;
+}
+
+// ======================================================================
+//  SESIONES DE MANGA (tablet Android + balanza XR5000 / bastón XRS2i)
+//  Las arma la app "Lector de Manga" y las sube con recibir_sesion_manga; acá sólo se consultan.
+// ======================================================================
+const SES_COLOR={verde:'#1b8f3a',amarillo:'#e6a800',rojo:'#c62828'};
+function fechaHora(ts){ if(!ts) return ''; const d=new Date(ts); if(isNaN(d)) return String(ts); const p=n=>String(n).padStart(2,'0'); return `${p(d.getDate())}/${p(d.getMonth()+1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; }
+function vSesiones(cont){
+  cont.append(el('h2',{},'Sesiones de manga'));
+  cont.append(el('div',{className:'mut',style:'margin-bottom:.8rem'},
+    'Sesiones armadas en la manga con la tablet y la balanza XR5000 (o el bastón). Cada lectura se controla contra el padrón del sistema: verde = está y coincide; amarillo = no existe en el sistema; rojo = está pero no coincide (otro titular, otra categoría, sin 90 días para exportación, dada de baja o virgen).'));
+  const t=el('div',{className:'tarjeta'});
+  const hoy=new Date(), hace=new Date(hoy.getTime()-30*864e5);
+  const iso=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  const fDesde=el('input',{type:'date',id:'sgDesde',value:iso(hace)}), fHasta=el('input',{type:'date',id:'sgHasta',value:iso(hoy)});
+  const fDest=el('select',{id:'sgDest'}); [['','Todos'],['EXPORTACION','Exportación'],['CONSUMO','Consumo']].forEach(([v,t])=>fDest.append(el('option',{value:v},t)));
+  const fCat=el('select',{id:'sgCat'}); [['','Todas'],['HEMBRA','HEMBRA'],['VACA','VACA'],['MACHO','MACHO'],['NOVILLO','NOVILLO']].forEach(([v,t])=>fCat.append(el('option',{value:v},t)));
+  const fCampo=el('select',{id:'sgCampo'}); fCampo.append(el('option',{value:''},'Todos')); (CAMPOS||[]).forEach(c=>fCampo.append(el('option',{value:String(c.id)},c.nombre+(c.propietario?' · '+c.propietario:''))));
+  const fCar=el('input',{id:'sgCar',placeholder:'busca en las lecturas'});
+  const bBuscar=el('button',{id:'sgBuscar'},'Buscar'), bXls=el('button',{className:'gris',id:'sgExcel'},'Exportar Excel');
+  const info=el('span',{className:'mut',id:'sgInfo'});
+  const fila=el('div',{className:'fila',style:'align-items:end'});
+  const f=(lbl,inp,st)=>{ const d=el('div',{style:st||''}); d.append(el('label',{},lbl),inp); return d; };
+  fila.append(f('Desde',fDesde),f('Hasta',fHasta),f('Destino',fDest),f('Categoría',fCat),f('Establecimiento',fCampo),f('Caravana',fCar),el('div',{style:'flex:0 0 auto'},bBuscar),el('div',{style:'flex:0 0 auto'},bXls));
+  t.append(fila, el('div',{style:'margin-top:.5rem'},info));
+  cont.append(t);
+  const out=el('div',{className:'tarjeta'}); cont.append(out);
+  const tabla=el('table',{id:'sgTabla'}); out.append(el('div',{style:'overflow-x:auto'},tabla));
+  const st={rows:[],det:{}};
+
+  async function todas(q){ const r=[]; for(let i=0;;i+=1000){ const {data,error}=await q.range(i,i+999); if(error) throw error; r.push(...(data||[])); if(!data||data.length<1000) break; } return r; }
+  async function cargar(){
+    st.det={}; tabla.innerHTML=''; info.textContent='Buscando…';
+    let q=sb.from('v_sesiones_manga').select('*').gte('inicio',fDesde.value+'T00:00:00').lte('inicio',fHasta.value+'T23:59:59').order('inicio',{ascending:false});
+    if(fDest.value) q=q.eq('destino',fDest.value); if(fCat.value) q=q.eq('categoria',fCat.value); if(fCampo.value) q=q.eq('campo_id',Number(fCampo.value));
+    try{
+      st.rows=await todas(q);
+      const car=fCar.value.trim().toUpperCase().replace(/\s+/g,'');
+      if(car){ const {data,error}=await sb.from('sesiones_manga_lecturas').select('sesion_id').ilike('caravana',`%${car}%`); if(error) throw error; const ids=new Set((data||[]).map(x=>x.sesion_id)); st.rows=st.rows.filter(s=>ids.has(s.id)); }
+    }catch(e){ info.textContent=''; tabla.innerHTML=''; out.append(el('div',{className:'aviso'},/v_sesiones_manga|schema cache|does not exist/i.test(errMsg(e))?'Todavía no está instalado el módulo del Lector de Manga en la base (falta correr el patch SQL).':'Error: '+errMsg(e))); return; }
+    pintar();
+  }
+  function pintar(){
+    const rows=st.rows; tabla.innerHTML='';
+    const thead=el('thead'); const trh=filaTH(['','Inicio','Fin','Destino','Categoría','Titular','Total','Verdes','Amarillas','Rojas','Borradas','A mano','Usuario','Tablet','Padrón al','']);
+    trh.children[7].style.color=SES_COLOR.verde; trh.children[8].style.color=SES_COLOR.amarillo; trh.children[9].style.color=SES_COLOR.rojo; thead.append(trh); tabla.append(thead);
+    const tb=el('tbody');
+    rows.forEach(s=>{
+      const tr=el('tr',{className:'ses-h'}); tr.dataset.ses=s.id;
+      const b=(v,color)=>{ const c=el('td',{className:'num'}); c.append(el('b',{style:color?'color:'+color:''},String(v))); return c; };
+      const acc=el('td',{style:'white-space:nowrap'});
+      const bCop=el('button',{className:'sec',style:'padding:.3em .7em;font-size:.8rem',title:'Copia las caravanas de esta sesión (sin las borradas), listas para pegar en Bajas o en Consultar'},'Copiar caravanas');
+      const bX=el('button',{className:'gris',style:'padding:.3em .7em;font-size:.8rem;margin-left:.3rem',title:'Excel de esta sesión'},'Excel');
+      bCop.dataset.copiar=s.id; bX.dataset.xls=s.id; acc.append(bCop,bX);
+      tr.append(td(st.det[s.id]?'▾':'▸'),td(fechaHora(s.inicio),'num'),td(fechaHora(s.fin),'num'),td(s.destino==='EXPORTACION'?'Exportación':'Consumo'),td(s.categoria),
+        td(s.propietario+(s.campo?' · '+s.campo:'')),b(s.total),b(s.verdes,SES_COLOR.verde),b(s.amarillas,SES_COLOR.amarillo),b(s.rojas,SES_COLOR.rojo),td(s.borradas,'mut num'),td(s.manuales,'mut num'),
+        td(s.usuario||'','mut'),td(s.tablet||'','mut'),td(fechaHora(s.padron_al),'mut num'),acc);
+      tb.append(tr);
+      const det=st.det[s.id];
+      if(det){
+        if(!det.length){ const r=el('tr',{className:'ses-d'}); r.append(td(''),el('td',{colSpan:15,className:'mut'},'Sin lecturas')); tb.append(r); }
+        det.forEach(l=>{
+          const r=el('tr',{className:'ses-d'}); if(l.borrada) r.style.cssText='color:var(--gris);text-decoration:line-through';
+          const col=el('td',{colSpan:2}); col.append(el('span',{className:'sem',style:'background:'+SES_COLOR[l.color]}),l.color+(l.borrada?' (borrada)':''));
+          r.append(td(''),el('td',{colSpan:2,className:'num'},fechaHora(l.hora)),col,td(l.caravana,'num'),el('td',{colSpan:2},(l.propietario||'')+' · '+(l.categoria||'')),
+            el('td',{colSpan:2},(l.dias!=null?l.dias+' d':'')+(l.estado&&l.estado!=='activa'?' · '+l.estado:'')),td(l.fuente==='manual'?'a mano':'bastón'),el('td',{colSpan:5},(l.motivos||[]).join(' — ')));
+          tb.append(r);
+        });
+      }
+    });
+    tabla.append(tb);
+    info.textContent=rows.length?`${rows.length} sesiones · ${rows.reduce((a,s)=>a+s.total,0)} lecturas · ${rows.reduce((a,s)=>a+s.rojas,0)} rojas`:'No hay sesiones en ese período.';
+  }
+  async function lecturas(id){ if(st.det[id]) return st.det[id]; const {data,error}=await sb.from('sesiones_manga_lecturas').select('*').eq('sesion_id',id).order('orden'); if(error) throw error; return data||[]; }
+  const filaSes=s=>({Inicio:fechaHora(s.inicio),Fin:fechaHora(s.fin),Destino:s.destino,Categoría:s.categoria,Titular:s.propietario,Establecimiento:s.campo||'',Total:s.total,Verdes:s.verdes,Amarillas:s.amarillas,Rojas:s.rojas,Borradas:s.borradas,'A mano':s.manuales,Usuario:s.usuario||'',Tablet:s.tablet||'','Padrón al':fechaHora(s.padron_al),Recibida:fechaHora(s.recibido_en),Id:s.id});
+  const filaLec=(l,s)=>({Sesión:fechaHora(s.inicio),Destino:s.destino||'',Categoría_sesión:s.categoria||'',Titular_sesión:s.propietario||'',Orden:l.orden,Caravana:l.caravana,Hora:fechaHora(l.hora),Color:l.color,Motivos:(l.motivos||[]).join(' — '),Fuente:l.fuente==='manual'?'a mano':'bastón',Titular:l.propietario||'',Categoría:l.categoria||'',Estado:l.estado||'',Días:l.dias??'',Borrada:l.borrada?'sí':'',Id_sesión:l.sesion_id});
+  function excelSes(nombre, hojas){
+    const wb=XLSX.utils.book_new();
+    for(const [h,filas] of Object.entries(hojas)){ const ws=XLSX.utils.json_to_sheet(filas); const ref=ws['!ref']; if(ref){ const hdr=Object.keys(filas[0]||{}); const ci=hdr.indexOf('Caravana'); if(ci>=0){ const L=XLSX.utils.encode_col(ci); for(let i=2;i<=filas.length+1;i++){ const c=ws[L+i]; if(c){ c.t='s'; c.v=String(c.v); } } } } XLSX.utils.book_append_sheet(wb,ws,h); }
+    XLSX.writeFile(wb,nombre);
+  }
+  tabla.onclick=async e=>{
+    const bc=e.target.closest('button[data-copiar]');
+    if(bc){ e.stopPropagation(); try{ const det=await lecturas(bc.dataset.copiar); const nums=[...new Set(det.filter(l=>!l.borrada).map(l=>l.caravana))]; if(!nums.length) return alert('La sesión no tiene caravanas');
+        const txt=nums.join('\n'); try{ await navigator.clipboard.writeText(txt); bc.textContent=nums.length+' copiadas'; setTimeout(()=>bc.textContent='Copiar caravanas',2000); }catch(err){ prompt('Copiá las caravanas:', txt.replace(/\n/g,' ')); } }catch(err){ alert(errMsg(err)); } return; }
+    const bx=e.target.closest('button[data-xls]');
+    if(bx){ e.stopPropagation(); try{ const s=st.rows.find(x=>x.id===bx.dataset.xls); const det=await lecturas(s.id); const d=new Date(s.inicio);
+        const nom=`sesion_manga_${iso(d)}_${String(d.getHours()).padStart(2,'0')}${String(d.getMinutes()).padStart(2,'0')}_${(s.propietario||'').replace(/\W+/g,'')}.xlsx`;
+        excelSes(nom,{Sesión:[filaSes(s)],Lecturas:det.map(l=>filaLec(l,s))}); }catch(err){ alert(errMsg(err)); } return; }
+    const tr=e.target.closest('tr[data-ses]'); if(!tr) return; const id=tr.dataset.ses;
+    if(st.det[id]){ delete st.det[id]; return pintar(); }
+    try{ st.det[id]=await lecturas(id); }catch(err){ return alert(errMsg(err)); } pintar();
+  };
+  bBuscar.onclick=cargar;
+  bXls.onclick=async()=>{
+    if(!st.rows.length) return alert('No hay sesiones en el listado');
+    const ids=st.rows.map(s=>s.id); let lect=[];
+    try{ lect=await todas(sb.from('sesiones_manga_lecturas').select('*').in('sesion_id',ids).order('sesion_id').order('orden')); }catch(e){ return alert(errMsg(e)); }
+    const cab=Object.fromEntries(st.rows.map(s=>[s.id,s]));
+    excelSes(`sesiones_manga_${hoyISO()}.xlsx`,{Sesiones:st.rows.map(filaSes),Lecturas:lect.map(l=>filaLec(l,cab[l.sesion_id]||{}))});
+  };
+  cargar();
 }
 
 // ---- eventos ----
